@@ -1,0 +1,12 @@
+[Unit]
+Description=server-kit 管理代理 Socket
+
+[Socket]
+ListenStream=/run/server-kit/manager.sock
+SocketUser=root
+SocketGroup=server-kit-web
+SocketMode=0660
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

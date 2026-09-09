@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+
+{% block title %}代理资源 · server-kit{% endblock %}
+
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main class="content detail-content">
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">Clash 上游</p>
+        <h1>代理资源</h1>
+        <p class="muted">管理机场、国家/地区和出口节点。启用的选择会自动加入全部 Clash 订阅。</p>
+      </div>
+      <span class="stage-badge">{{ proxy.active_airport_count|default:0 }} / {{ proxy.airport_count|default:0 }} 个机场启用</span>
+    </header>
+    {% include "dashboard/_messages.html" %}
+    {% if snapshot_error %}<div class="alert danger">{{ snapshot_error }}</div>{% endif %}
+
+    <section class="metric-grid proxy-metrics">
+      <article class="metric"><span>机场</span><strong>{{ proxy.airport_count|default:0 }} 个</strong><small>{{ proxy.active_airport_count|default:0 }} 个已加入 PROXY</small></article>
+      <article class="metric"><span>出口节点</span><strong>{{ proxy.exit_count|default:0 }} 个</strong><small>默认出口会被未单独配置的 AWG / VLESS 节点使用</small></article>
+    </section>
+
+    <section class="proxy-flow" aria-label="代理资源使用步骤">
+      <span><strong>1</strong> 添加机场</span><span><strong>2</strong> 选择地区</span><span><strong>3</strong> 配置出口</span><span><strong>4</strong> 自动刷新订阅</span>
+    </section>
+
+    {% if request.user.is_superuser and not sensitive_unlocked %}
+    <section class="sensitive-unlock">
+      <div><strong>机场链接与出口凭据已锁定</strong><p>输入当前管理账号密码，5 分钟内可查看和复制；页面不会长期保留明文。</p></div>
+      <form method="post" action="{% url 'sensitive-unlock' %}">{% csrf_token %}<input type="hidden" name="destination" value="proxy"><label><span class="sr-only">当前账号密码</span><input type="password" name="password" required autocomplete="current-password" placeholder="当前账号密码"></label><button class="secondary-button" type="submit">解锁敏感信息</button></form>
+    </section>
+    {% endif %}
+
+    {% if proxy.airport_count and request.user.is_superuser or proxy.airport_count and request.user.is_staff %}
+    <form method="post" class="connectivity-form">{% csrf_token %}<input type="hidden" name="operation" value="test"><button class="secondary-button" type="submit">测试全部连接</button><span>检查每个机场和出口节点是否可达，不会泄露链接或密码。</span></form>
+    {% endif %}
+
+    <section class="inventory-panel airport-panel">
+      <div class="section-heading"><div><p class="eyebrow">机场</p><h2>已添加的机场</h2></div><span class="muted">{{ proxy.airport_count|default:0 }} 个</span></div>
+      <div class="airport-list">
+        {% for airport in proxy.airports %}
+        <article class="airport-card{% if not airport.enabled %} is-disabled{% endif %}">
+          <div class="airport-card-head">
+            <div class="airport-identity">
+              <div class="airport-title"><strong>{{ airport.name }}</strong><span class="item-state">{% if airport.enabled %}已启用{% else %}已停用{% endif %}</span></div>
+              <p>{{ airport.host }}</p>
+            </div>
+            <div class="airport-summary"><span class="airport-country-summary">{{ airport.country_labels|join:" · " }}</span>
+              {% if request.user.is_superuser and sensitive_unlocked %}<form class="inline-secret-actions">{% csrf_token %}<button class="copy-button" type="button" data-secret-action="view" data-endpoint="{% url 'network-proxy-secret' airport.id 'link' %}">查看链接</button><button class="copy-button" type="button" data-secret-action="copy" data-endpoint="{% url 'network-proxy-secret' airport.id 'link' %}">复制链接</button></form>{% endif %}
+            </div>
+          </div>
+          {% if request.user.is_superuser or request.user.is_staff %}
+          <details class="airport-editor">
+            <summary>管理这个机场</summary>
+            <div class="airport-editor-body">
+              <form class="proxy-resource-form" method="post">
+                {% csrf_token %}<input type="hidden" name="operation" value="airport_update"><input type="hidden" name="airport_id" value="{{ airport.id }}">
+                <div class="airport-fields"><label>机场名称<input name="airport_name" value="{{ airport.name }}" maxlength="40" required></label><label>替换订阅链接（可留空）<input type="password" name="airport_url" autocomplete="off" placeholder="留空表示保持不变"></label></div>
+                <label class="toggle-row"><input type="checkbox" name="airport_enabled" value="yes"{% if airport.enabled %} checked{% endif %}><span><strong>在订阅中启用这个机场</strong><small>关闭后保留配置，但不会加入 PROXY。</small></span></label>
+                <fieldset class="country-picker"><legend>加入 PROXY 的国家或地区</legend><div>{% for option in proxy.country_options %}<label><input type="checkbox" name="countries" value="{{ option.id }}"{% if option.id in airport.countries %} checked{% endif %}><span>{{ option.label }}</span></label>{% endfor %}</div><small>选择“全部地区”时会忽略其他选项。</small></fieldset>
+                <label>当前管理账号密码<input type="password" name="password" required autocomplete="current-password"></label>
+                <label class="check-row"><input type="checkbox" name="confirmed" value="yes" required><span>确认保存并刷新全部发布订阅。</span></label>
+                <button class="action-button" type="submit">检查变更</button>
+              </form>
+              <form class="airport-delete-form" method="post">{% csrf_token %}<input type="hidden" name="operation" value="airport_delete"><input type="hidden" name="airport_id" value="{{ airport.id }}"><label>删除前输入当前密码<input type="password" name="password" required autocomplete="current-password"></label><label class="check-row"><input type="checkbox" name="confirmed" value="yes" required><span>确认删除 {{ airport.name }} 并刷新订阅。</span></label><button class="copy-button danger-quiet" type="submit">删除机场</button></form>
+            </div>
+          </details>
+          {% endif %}
+        </article>
+        {% empty %}<div class="empty-state"><strong>还没有机场</strong><p>点击下方“添加机场”，粘贴订阅链接并选择需要的地区。</p></div>{% endfor %}
+      </div>
+
+      {% if request.user.is_superuser or request.user.is_staff %}
+      <details class="proxy-create-panel">
+        <summary><span><strong>添加机场</strong><small>最多管理 8 个机场</small></span><span aria-hidden="true">＋</span></summary>
+        <form class="proxy-resource-form" method="post">
+          {% csrf_token %}<input type="hidden" name="operation" value="airport_add">
+          <div class="airport-fields"><label>机场名称<input name="airport_name" maxlength="40" required placeholder="例如：主用机场"></label><label>机场订阅链接<input type="password" name="airport_url" required autocomplete="off" placeholder="https://…"></label></div>
+          <label class="toggle-row"><input type="checkbox" name="airport_enabled" value="yes" checked><span><strong>添加后立即启用</strong><small>所选地区会加入 PROXY。</small></span></label>
+          <fieldset class="country-picker"><legend>加入 PROXY 的国家或地区</legend><div>{% for option in proxy.country_options %}<label><input type="checkbox" name="countries" value="{{ option.id }}"{% if option.id == "all" %} checked{% endif %}><span>{{ option.label }}</span></label>{% endfor %}</div></fieldset>
+          <label>当前管理账号密码<input type="password" name="password" required autocomplete="current-password"></label>
+          <label class="check-row"><input type="checkbox" name="confirmed" value="yes" required><span>确认添加并刷新全部发布订阅。</span></label>
+          <button class="action-button" type="submit">检查并添加</button>
+        </form>
+      </details>
+      {% endif %}
+    </section>
+
+    <section class="inventory-panel exit-panel">
+      <div class="section-heading"><div><p class="eyebrow">出口</p><h2>出口节点目录</h2></div><span class="item-state">{{ proxy.exit_count|default:0 }} 个</span></div>
+      <p class="privacy-note">默认出口用于未单独选择的 AWG / VLESS 节点；出口资源名称会直接生成英文 EXIT 与 VLESS 中转名称。</p>
+      <div class="airport-list">
+        {% for exit in proxy.exits %}
+        <article class="airport-card">
+          <div class="airport-card-head"><div class="airport-identity"><div class="airport-title"><strong>{{ exit.name }}</strong>{% if exit.default %}<span class="item-state">默认</span>{% endif %}</div><p>{{ exit.type }} · {{ exit.server }}:{{ exit.port }}</p></div>{% if request.user.is_superuser and sensitive_unlocked %}<form class="inline-secret-actions">{% csrf_token %}<button class="copy-button" type="button" data-secret-action="view" data-endpoint="{% url 'network-proxy-secret' exit.id 'exit' %}">查看配置</button><button class="copy-button" type="button" data-secret-action="copy" data-endpoint="{% url 'network-proxy-secret' exit.id 'exit' %}">复制配置</button></form>{% endif %}</div>
+          {% if request.user.is_superuser or request.user.is_staff %}<details class="airport-editor"><summary>管理这个出口</summary><div class="airport-editor-body">
+            <form class="proxy-resource-form" method="post">{% csrf_token %}<input type="hidden" name="operation" value="exit_update"><input type="hidden" name="exit_id" value="{{ exit.id }}"><label>出口名称<input name="exit_name" value="{{ exit.name }}" maxlength="40" required><small>请使用英文或数字；该名称会直接用于 EXIT 与 VLESS 中转节点。</small></label><label>完整出口节点 YAML<textarea name="exit_proxy_yaml" rows="8" required spellcheck="false"></textarea></label><label class="toggle-row"><input type="checkbox" name="exit_default" value="yes"{% if exit.default %} checked{% endif %}><span><strong>设为默认出口</strong><small>未单独选择出口的 AWG / VLESS 节点会使用它。</small></span></label><label>当前管理账号密码<input type="password" name="password" required autocomplete="current-password"></label><label class="check-row"><input type="checkbox" name="confirmed" value="yes" required><span>确认更新并刷新 Xray 与全部订阅。</span></label><button class="action-button" type="submit">检查变更</button></form>
+            {% if not exit.default %}<form method="post">{% csrf_token %}<input type="hidden" name="operation" value="exit_set_default"><input type="hidden" name="exit_id" value="{{ exit.id }}"><label>设为默认前输入当前密码<input type="password" name="password" required autocomplete="current-password"></label><label class="check-row"><input type="checkbox" name="confirmed" value="yes" required><span>确认将 {{ exit.name }} 设为默认出口。</span></label><button class="secondary-button" type="submit">设为默认</button></form>{% endif %}
+            <form class="airport-delete-form" method="post">{% csrf_token %}<input type="hidden" name="operation" value="exit_delete"><input type="hidden" name="exit_id" value="{{ exit.id }}"><label>删除前输入当前密码<input type="password" name="password" required autocomplete="current-password"></label><label class="check-row"><input type="checkbox" name="confirmed" value="yes" required><span>确认删除 {{ exit.name }}；最后一个出口不可删除。</span></label><button class="copy-button danger-quiet" type="submit">删除出口</button></form>
+          </div></details>{% endif %}
+        </article>
+        {% empty %}<div class="empty-state compact-empty"><strong>尚未配置出口节点</strong><p>添加第一个出口后会自动成为默认。</p></div>{% endfor %}
+      </div>
+      {% if request.user.is_superuser or request.user.is_staff %}
+      <details class="proxy-create-panel exit-editor">
+        <summary><span><strong>添加出口节点</strong><small>最多管理 16 个，VLESS 中转同步发布</small></span><span aria-hidden="true">＋</span></summary>
+        <form class="proxy-resource-form" method="post" data-exit-input-form>
+          {% csrf_token %}<input type="hidden" name="operation" value="exit_add">
+          <label>出口名称<input name="exit_name" maxlength="40" required placeholder="例如：example-us"><small>请使用英文或数字；该名称会直接用于 EXIT 与 VLESS 中转节点。</small></label>
+          <fieldset class="exit-input-mode">
+            <legend>配置输入方式</legend>
+            <div>
+              <label><input type="radio" name="exit_input_mode" value="fields" checked><span><strong>按字段输入</strong><small>适合 SOCKS5，推荐</small></span></label>
+              <label><input type="radio" name="exit_input_mode" value="yaml"><span><strong>YAML 文本</strong><small>适合粘贴已有完整节点</small></span></label>
+            </div>
+          </fieldset>
+          <section class="exit-input-panel" data-exit-input-panel="fields">
+            <input type="hidden" name="exit_field_type" value="socks5">
+            <div class="exit-field-grid">
+              <label>协议<input value="SOCKS5" readonly aria-readonly="true"></label>
+              <label>服务器域名或 IP<input name="exit_field_server" maxlength="253" autocomplete="off" spellcheck="false" placeholder="proxy.example.com" data-exit-required></label>
+              <label>端口<input name="exit_field_port" value="1080" inputmode="numeric" pattern="[0-9]{1,5}" data-exit-required></label>
+              <label>账号（可选）<input name="exit_field_username" maxlength="256" autocomplete="off"></label>
+              <label>密码（可选）<input type="password" name="exit_field_password" maxlength="256" autocomplete="new-password"></label>
+            </div>
+            <p class="field-hint">账号和密码要么同时填写，要么同时留空；UDP 会自动启用。</p>
+          </section>
+          <section class="exit-input-panel exit-yaml-panel" data-exit-input-panel="yaml" hidden>
+            <div class="yaml-format-reference"><strong>YAML 格式参考</strong><pre>type: socks5
+server: proxy.example.com
+port: 1080
+username: your-username
+password: your-password
+udp: true</pre><small>这份参考会始终显示，不会因输入内容而消失。</small></div>
+            <label>完整出口节点 YAML<textarea name="exit_proxy_yaml" rows="10" spellcheck="false" data-exit-required>type: socks5
+server: proxy.example.com
+port: 1080
+username: your-username
+password: your-password
+udp: true</textarea></label>
+          </section>
+          <label class="toggle-row"><input type="checkbox" name="exit_default" value="yes"><span><strong>添加后设为默认出口</strong><small>不勾选则保留当前默认出口。</small></span></label>
+          <label>当前管理账号密码<input type="password" name="password" required autocomplete="current-password"></label>
+          <label class="check-row"><input type="checkbox" name="confirmed" value="yes" required><span>确认添加并刷新 Xray 与全部订阅。</span></label>
+          <button class="action-button" type="submit">检查并添加</button>
+        </form>
+      </details>
+      {% endif %}
+    </section>
+  </main>
+</div>
+
+{% if request.user.is_superuser %}
+<div class="qr-modal" data-secret-modal hidden>
+  <div class="qr-backdrop" data-secret-close></div>
+  <section class="qr-dialog secret-dialog" role="dialog" aria-modal="true" aria-labelledby="proxy-secret-title">
+    <button class="qr-close" type="button" data-secret-close aria-label="关闭">×</button>
+    <p class="eyebrow">敏感代理资源</p><h2 id="proxy-secret-title" data-secret-title>查看配置</h2>
+    <pre class="secret-value" id="proxy-secret-value" data-secret-value></pre>
+    <div class="modal-actions"><button class="secondary-button" type="button" data-copy-target="#proxy-secret-value">复制内容</button><button class="copy-button" type="button" data-secret-close>关闭</button></div>
+    <p class="qr-note">内容可能包含访问令牌或密码。关闭后立即从页面清除。</p>
+  </section>
+</div>
+{% endif %}
+{% endblock %}

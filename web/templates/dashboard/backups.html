@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block title %}配置备份 · server-kit{% endblock %}
+
+{% block body %}
+<div class="app-shell">
+{% include "dashboard/_navigation.html" %}
+<main class="content detail-content">
+<header class="page-header">
+  <div><p class="eyebrow">灾难恢复</p><h1>加密配置备份</h1></div>
+  <p class="muted">包含服务端密钥、访问策略和管理网站数据；不包含客户端私钥与 Git 仓库。口令不会保存，遗失后无法恢复。</p>
+</header>
+
+{% include "dashboard/_messages.html" %}
+{% if snapshot_error %}<div class="alert danger">{{ snapshot_error }}</div>{% endif %}
+
+{% if restore_transaction.state == "pending" %}
+<section class="transaction-card pending backup-preview">
+  <div class="card-title"><div><p class="eyebrow">恢复事务</p><h2>等待新连接验证</h2></div><span class="status-pill">自动回滚中</span></div>
+  <div class="countdown" data-countdown="{{ restore_transaction.remaining_seconds }}"><strong data-countdown-value>{{ restore_transaction.remaining_seconds }}</strong><span>秒后恢复原配置</span></div>
+  <p class="muted">已写入 {{ restore_transaction.changed_count }} 项磁盘配置；没有主动重启 AWG、SSH 或 VLESS。</p>
+  <ul class="verification-list">{% for item in restore_transaction.verifications %}<li>{{ item }}</li>{% endfor %}</ul>
+  <div class="action-row">
+    <form method="post">{% csrf_token %}<input type="hidden" name="operation" value="restore_confirm"><button class="action-button" type="submit">确认持久化（需独立登录）</button></form>
+    <form method="post">{% csrf_token %}<input type="hidden" name="operation" value="restore_rollback"><button class="action-button danger-button" type="submit">立即回滚</button></form>
+  </div>
+</section>
+{% endif %}
+
+<section class="backup-layout">
+  <article class="transaction-card">
+    <p class="eyebrow">新建备份</p><h2>设置独立恢复口令</h2>
+    <p class="muted">建议使用密码管理器生成并保存至少 20 个字符的口令。</p>
+    <form method="post" autocomplete="off" class="stack-form">
+      {% csrf_token %}<input type="hidden" name="operation" value="create">
+      <label>恢复口令<input type="password" name="passphrase" minlength="16" maxlength="256" autocomplete="new-password" required></label>
+      <label>再次输入<input type="password" name="passphrase_confirmation" minlength="16" maxlength="256" autocomplete="new-password" required></label>
+      <button class="action-button" type="submit">创建加密备份</button>
+    </form>
+  </article>
+  <article class="transaction-card">
+    <p class="eyebrow">安全边界</p><h2>备份内容</h2>
+    <ul class="verification-list">
+      <li>AES-256-GCM 认证加密，篡改会被拒绝</li>
+      <li>覆盖 AWG、VLESS、SSH、订阅与管理网站配置</li>
+      <li>客户端配置、已删除密钥和临时登记材料不会进入备份</li>
+      <li>SQLite 使用一致性快照，不直接复制活动数据库</li>
+      <li>Git 仓库继续通过 clone / push 单独备份</li>
+    </ul>
+  </article>
+</section>
+
+{% if restore_task %}
+<section class="panel backup-preview">
+  <div class="card-title"><div><p class="eyebrow">脱敏影响预览</p><h2>{{ restore_task.preview.title }}</h2></div><span class="status-pill">未写入</span></div>
+  <dl class="impact-list">{% for label, value in restore_task.preview.facts.items %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
+  <div class="alert danger"><strong>高风险操作</strong><p>应用后只写磁盘配置，并启动 {{ restore_transaction.rollback_seconds }} 秒自动回滚；请用新连接验证后再确认。</p></div>
+  <form method="post" class="stack-form">
+    {% csrf_token %}<input type="hidden" name="operation" value="restore_apply"><input type="hidden" name="task_id" value="{{ restore_task.id }}">
+    <button class="action-button danger-button" type="submit">应用并启动自动回滚</button>
+  </form>
+</section>
+{% endif %}
+
+<section class="panel">
+  <div class="card-title"><div><p class="eyebrow">本机密文</p><h2>已有备份</h2></div><span class="status-pill">{{ backups|length }} 份</span></div>
+  {% if backups %}<div class="backup-list">
+    {% for backup in backups %}<article class="backup-row">
+      <div><strong>{{ backup.created_at }}</strong><p class="muted">{{ backup.file_count }} 个文件 · {{ backup.size }} 字节 · {{ backup.cipher }}</p><p class="eyebrow">{{ backup.categories|join:", " }}</p>{% if backup.assurance_state == "legacy" %}<p class="alert danger">旧格式可能含客户端私钥，仅可校验，禁止恢复。</p>{% elif backup.assurance_state == "cleanup_ready" %}<p class="preview-only">已校验并完成恢复演练 · 可清理旧备份</p>{% elif backup.assurance_state == "verified" %}<p class="preview-only">完整性已校验 · 还需恢复预览</p>{% else %}<p class="muted">待校验与恢复预览</p>{% endif %}</div>
+      <div class="backup-actions">
+        <a class="secondary-button" href="{% url 'backup-download' backup.backup_id %}">下载密文</a>
+        {% if restore_transaction.state != "pending" %}<form method="post" action="{% url 'backup-delete-preview' backup.backup_id %}">{% csrf_token %}<button class="copy-button danger-quiet" type="submit">删除备份</button></form>{% endif %}
+        {% if restore_transaction.state != "pending" %}<details><summary class="secondary-button">校验 / 恢复预览</summary>
+          <form method="post" autocomplete="off" class="stack-form compact-form">
+            {% csrf_token %}<input type="hidden" name="backup_id" value="{{ backup.backup_id }}">
+            <label>恢复口令<input type="password" name="passphrase" minlength="16" maxlength="256" autocomplete="current-password" required></label>
+            <div class="inline-actions"><button name="operation" value="verify" class="secondary-button" type="submit">仅校验</button><button name="operation" value="preview_restore" class="action-button" type="submit">{% if backup.restore_allowed %}恢复预览{% else %}只读查看{% endif %}</button></div>
+          </form>
+        </details>{% else %}<span class="preview-only">事务进行中</span>{% endif %}
+      </div>
+    </article>{% endfor %}
+  </div>{% else %}<p class="empty-state">还没有配置备份。创建后请下载到密码管理器或离线存储。</p>{% endif %}
+</section>
+</main>
+</div>
+{% endblock %}

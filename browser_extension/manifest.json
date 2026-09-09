@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "server-kit 本地密钥生成器",
+  "version": "0.4.1",
+  "description": "完全离线生成 AWG 节点密钥、配置和不含私钥的登记信息。",
+  "permissions": ["alarms", "storage"],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "server-kit 本地密钥生成器",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "background": {
+    "service_worker": "service_worker.js"
+  }
+}

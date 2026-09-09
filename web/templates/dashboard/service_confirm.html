@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}确认{{ task.preview.title }} · server-kit{% endblock %}
+
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main class="content confirm-content">
+    <a class="back-link" href="{% url 'service-detail' service_id %}">← 取消并返回</a>
+    <section class="confirm-card">
+      <span class="stage-badge">二次确认</span>
+      <p class="eyebrow">{{ task.id }}</p>
+      <h1>确认{{ task.preview.title }}</h1>
+      <p class="muted">{{ task.preview.summary }}</p>
+      <dl class="impact-list">
+        {% for label, value in task.preview.facts.items %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}
+        <div><dt>执行账号</dt><dd>{{ task.actor }}</dd></div>
+      </dl>
+      <form class="confirm-actions" method="post" action="{% url 'service-action-execute' service_id %}">
+        {% csrf_token %}
+        <input type="hidden" name="task_id" value="{{ task.id }}">
+        <a class="secondary-button" href="{% url 'service-detail' service_id %}">取消</a>
+        <button class="action-button{% if operation == 'stop' %} danger-button{% endif %}" type="submit">确认执行</button>
+      </form>
+    </section>
+  </main>
+</div>
+{% endblock %}

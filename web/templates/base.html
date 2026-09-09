@@ -1,0 +1,19 @@
+{% load static %}
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#080b12">
+    <title>{% block title %}server-kit{% endblock %}</title>
+    <script src="{% static 'theme.js' %}"></script>
+    <link rel="stylesheet" href="{% static 'app.css' %}">
+    {% block extra_head %}{% endblock %}
+    <script src="{% static 'app.js' %}" defer></script>
+  </head>
+  <body>
+    {% block body %}{% endblock %}
+    <a class="guide-return-bar" data-guide-return hidden href="{% url 'node-deployment-guide' %}">返回部署步骤</a>
+  </body>
+</html>

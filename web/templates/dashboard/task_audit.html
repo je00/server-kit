@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}任务与审计 · server-kit{% endblock %}
+
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main class="content detail-content">
+    <header class="page-header"><div><p class="eyebrow">可追溯变更</p><h1>任务与审计</h1><p class="muted">显示最近 200 条管理动作。每次读取都会从第一条开始验证哈希链，敏感值不会写入日志。</p></div><span class="stage-badge">{% if audit.chain_valid %}审计链完整{% else %}校验失败{% endif %}</span></header>
+    {% if snapshot_error %}<div class="alert danger">{{ snapshot_error }}</div>{% endif %}
+    <section class="inventory-panel">
+      <div class="section-heading"><div><p class="eyebrow">异步变更</p><h2>最近任务</h2></div></div>
+      <div class="audit-list">
+        {% for item in tasks.items %}<article><div><strong><a href="{% url 'change-task-detail' item.id %}">{{ item.preview.title }}</a></strong><p>{{ item.created_at }} · {{ item.actor }}</p></div><div class="audit-meta"><span>{{ item.id }}</span><span>{{ item.state_label }}</span></div></article>{% empty %}<div class="empty-state">暂无异步变更任务。</div>{% endfor %}
+      </div>
+    </section>
+    <section class="inventory-panel">
+      <div class="section-heading"><div><p class="eyebrow">最近记录</p><h2>管理动作</h2></div></div>
+      <div class="audit-list">
+        {% for item in audit.items %}<article><div><strong>{{ item.operation }}</strong><p>{{ item.timestamp }} · {{ item.actor }}</p></div><div class="audit-meta"><span>{{ item.service_id }}</span><span class="audit-{{ item.outcome }}">{% if item.outcome == 'success' %}成功{% elif item.outcome == 'timeout' %}超时{% else %}失败{% endif %}</span></div></article>{% empty %}<div class="empty-state">暂无管理动作。</div>{% endfor %}
+      </div>
+      <p class="privacy-note">原始审计文件：/var/log/server-kit/management-actions.jsonl，仅 root 可直接读取。</p>
+    </section>
+  </main>
+</div>
+{% endblock %}

@@ -1,0 +1,25 @@
+[Unit]
+Description=server-kit 受限 root 管理代理
+Requires=server-kit-agent.socket
+After=server-kit-agent.socket
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=@APP_DIR@
+Environment=SERVER_KIT_HIGH_RISK_WRITES=0
+Environment=SERVER_KIT_NETWORK_WRITES=1
+StateDirectory=server-kit-agent
+StateDirectoryMode=0700
+ExecStart=@PYTHON_BIN@ @APP_DIR@/control_plane/agent.py --systemd-socket --web-user server-kit-web --manager @APP_DIR@/server-kit-manager.sh --task-db /var/lib/server-kit-agent/tasks.sqlite3 --task-key /var/lib/server-kit-agent/task-payload.key
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ReadWritePaths=/root/.ssh /var/lib/server-kit-agent /var/lib/server-kit-web/uploads
+UMask=0077
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

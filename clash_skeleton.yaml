@@ -1,0 +1,374 @@
+proxy-providers:
+  airport:
+    type: http
+    url: <url>
+    path: ./proxy_providers/airport.yaml
+    interval: 3600
+    health-check:
+      enable: true
+      url: https://8.8.8.8/generate_204
+      interval: 300
+      lazy: false
+
+proxies:
+  - name: chain.mid.proxy
+    type: socks5
+    server: <server_ip>
+    port: <port>
+    username: <username>
+    password: <password>
+    udp: true
+    dialer-proxy: MID
+
+  - name: ENDPOINT.MID.443
+    type: vless
+    server: "10.10.0.1"
+    port: 443
+    uuid: "<uuid>"
+    network: tcp
+    udp: true
+    tls: true
+    flow: xtls-rprx-vision
+    servername: www.apple.com
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: "<public_key>"
+      short-id: "<short_id>"
+    packet-encoding: xudp
+
+  - name: ENDPOINT.MID.2053
+    type: vless
+    server: "10.10.0.1"
+    port: 2053
+    uuid: "<uuid>"
+    network: tcp
+    udp: true
+    tls: true
+    flow: xtls-rprx-vision
+    servername: www.apple.com
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: "<public_key>"
+      short-id: "<short_id>"
+    packet-encoding: xudp
+    
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - chain.mid.proxy
+      - MID
+
+  - name: MID
+    type: fallback
+    proxies:
+      - ENDPOINT.MID.443
+      - ENDPOINT.MID.2053
+    url: https://8.8.8.8/generate_204
+    interval: 300
+    lazy: false
+
+# ==================== 基础运行设置 ====================
+# 按规则决定直连或代理。
+mode: rule
+# 禁止局域网设备使用本机代理。
+allow-lan: false
+# 保留常用运行日志。
+log-level: info
+# 关闭内核 IPv6；DNS 的 AAAA 响应在下方单独关闭。
+ipv6: false
+
+# ==================== 进程匹配 ====================
+# 应用程序规则可能依赖进程识别。
+find-process-mode: always
+
+# ==================== 远程规则集 ====================
+rule-providers:
+  # ---------- 域名规则集 ----------
+  reject:
+    type: http
+    behavior: domain
+    format: yaml
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/reject.txt"
+    path: ./ruleset/reject.yaml
+    interval: 86400
+
+  icloud:
+    type: http
+    behavior: domain
+    format: yaml
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/icloud.txt"
+    path: ./ruleset/icloud.yaml
+    interval: 86400
+
+  apple:
+    type: http
+    behavior: domain
+    format: yaml
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/apple.txt"
+    path: ./ruleset/apple.yaml
+    interval: 86400
+
+  google:
+    type: http
+    behavior: domain
+    format: yaml
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/google.txt"
+    path: ./ruleset/google.yaml
+    interval: 86400
+
+  proxy:
+    type: http
+    behavior: domain
+    format: yaml
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/proxy.txt"
+    path: ./ruleset/proxy.yaml
+    interval: 86400
+
+  direct:
+    type: http
+    behavior: domain
+    format: yaml
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/direct.txt"
+    path: ./ruleset/direct.yaml
+    interval: 86400
+
+  private:
+    type: http
+    behavior: domain
+    format: yaml
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/private.txt"
+    path: ./ruleset/private.yaml
+    interval: 86400
+
+  gfw:
+    type: http
+    behavior: domain
+    format: yaml
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/gfw.txt"
+    path: ./ruleset/gfw.yaml
+    interval: 86400
+
+  tld-not-cn:
+    type: http
+    behavior: domain
+    format: yaml
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/tld-not-cn.txt"
+    path: ./ruleset/tld-not-cn.yaml
+    interval: 86400
+
+  # ---------- IP 地址规则集 ----------
+  telegramcidr:
+    type: http
+    behavior: ipcidr
+    format: yaml
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/telegramcidr.txt"
+    path: ./ruleset/telegramcidr.yaml
+    interval: 86400
+
+  cncidr:
+    type: http
+    behavior: ipcidr
+    format: yaml
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/cncidr.txt"
+    path: ./ruleset/cncidr.yaml
+    interval: 86400
+
+  lancidr:
+    type: http
+    behavior: ipcidr
+    format: yaml
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/lancidr.txt"
+    path: ./ruleset/lancidr.yaml
+    interval: 86400
+
+  # ---------- 程序规则集 ----------
+  applications:
+    type: http
+    behavior: classical
+    format: yaml
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/applications.txt"
+    path: ./ruleset/applications.yaml
+    interval: 86400
+
+  # ---------- 专用服务域名规则集 ----------
+  openai:
+    type: http
+    behavior: domain
+    format: yaml
+    url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/OpenAI/OpenAI.yaml"
+    path: ./ruleset/openai.yaml
+    interval: 86400
+
+  anthropic:
+    type: http
+    behavior: domain
+    format: yaml
+    url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Anthropic/Anthropic.yaml"
+    path: ./ruleset/anthropic.yaml
+    interval: 86400
+
+# ==================== 路由规则 ====================
+rules:
+  # ---------- 广告拦截 ----------
+  # 广告规则优先于其他连接。
+  - RULE-SET,reject,REJECT
+
+  # ---------- 指定内网地址直连 ----------
+  - IP-CIDR,172.16.1.15/32,DIRECT,no-resolve     # CD-云桌面
+  - IP-CIDR,192.168.189.0/24,DIRECT,no-resolve   # VS远程调试通道
+
+  # --- 安全域名直连 ---
+  - DOMAIN-SUFFIX,weaver.com.com,DIRECT # EMobile10
+
+  # ---------- 局域网直连 ----------
+  # 局域网先直连，避免全局 UDP 规则影响设备发现。
+  - RULE-SET,private,DIRECT
+  - RULE-SET,lancidr,DIRECT
+  - GEOIP,LAN,DIRECT
+
+  # ---------- 全局公网 UDP ----------
+  # UDP 跟随当前 PROXY；所选路径不支持 UDP 时继续命中 REJECT，
+  # 不再自动降级到 MID 或 DIRECT，保持 TCP、UDP 与 DNS 出口一致。
+  - NETWORK,udp,PROXY
+  - NETWORK,udp,REJECT
+
+  # ---------- 常规网络分流 ----------
+  # 未被前述规则匹配的 TCP 连接按域名和目标地址分流。
+
+  # --- 指定域名直连 ---
+
+  # --- 应用程序直连 ---
+  - RULE-SET,applications,DIRECT
+
+  # --- 服务域名分流 ---
+  - RULE-SET,icloud,DIRECT
+  - RULE-SET,apple,DIRECT
+  - RULE-SET,google,PROXY
+  - RULE-SET,proxy,PROXY
+  - RULE-SET,openai,PROXY
+  - RULE-SET,anthropic,PROXY
+
+  # --- Telegram 地址代理 ---
+  - RULE-SET,telegramcidr,PROXY
+
+  # --- 直连域名与国内地址 ---
+  - RULE-SET,direct,DIRECT
+  - RULE-SET,cncidr,DIRECT
+  - GEOIP,CN,DIRECT
+
+  # ---------- 最终出口 ----------
+  # MATCH 会截断匹配，必须保持在最后。
+  - MATCH,PROXY
+
+# ==================== Clash Verge 管理项 ====================
+# 代理端口和控制接口由 Clash Verge 生成，避免与界面设置冲突。
+# mixed-port: 7890
+# external-controller: 127.0.0.1:9090
+
+# ==================== TUN 设置 ====================
+# TUN 接管系统流量；Clash Verge 界面设置可能覆盖本段。
+tun:
+  # ---------- 基本设置 ----------
+  # 让未设置系统代理的程序也通过 Mihomo。
+  enable: true
+  # TCP 用系统栈，UDP 用 gVisor，兼顾 Windows 兼容性。
+  stack: mixed
+
+  # ---------- DNS 接管 ----------
+  # 接管 UDP 和 TCP 的 53 端口 DNS 请求。
+  dns-hijack:
+    - any:53
+    - tcp://any:53
+
+  # ---------- 路由接管 ----------
+  # 自动配置路由并识别出口网卡。
+  auto-route: true
+  auto-detect-interface: true
+  # 阻止多网卡产生 DNS 旁路。
+  strict-route: true
+
+  # ---------- 局域网排除示例 ----------
+  # 如需访问局域网，只排除实际使用的精确网段。
+  route-exclude-address:
+
+# ==================== DNS 设置 ====================
+dns:
+  # ---------- 基本行为 ----------
+  # 启用 Mihomo DNS。
+  enable: true
+  # 仅监听本机 1053 端口，避免向局域网开放。
+  listen: 127.0.0.1:1053
+  # 不返回 AAAA 记录，不影响 Windows 的 IPv6 开关。
+  ipv6: false
+  # 返回假地址以保留域名，便于后续匹配规则。
+  enhanced-mode: fake-ip
+  # Mihomo 用 respect-rules，Stash 用 follow-rule。
+  # 两者只决定 DNS 请求出口；DNS 上游由下方字段选择。
+  respect-rules: true  # Mihomo 专用
+  follow-rule: true    # Stash 专用
+  # 忽略配置和系统 hosts。
+  use-hosts: false
+  use-system-hosts: false
+  # DoH 不优先使用 HTTP/3，减少规则路由兼容问题。
+  prefer-h3: false
+
+  # 以下按启动依赖和匹配优先级排列，不是每次查询都逐段执行。
+
+  # ---------- DNS 上游：代理节点 ----------
+  # 发布器启用服务端 VLESS 中转后，会把节点解析改走首选出口的独立 RELAY 组；
+  # 未启用时保留这组 IP DoH，避免解析器本身再次依赖域名。
+  proxy-server-nameserver:
+    - https://223.5.5.5/dns-query
+    - https://1.12.12.12/dns-query
+
+  # ---------- DNS 上游：中国大陆域名 ----------
+  # Stash 3.4.0+ 使用 geosite:cn，并发查询国内 DNS。
+  nameserver-policy:
+    "geosite:cn":
+      - https://223.5.5.5/dns-query
+      - https://1.12.12.12/dns-query
+    "+.byd.auto":
+      - https://223.5.5.5/dns-query
+      - https://1.12.12.12/dns-query
+
+
+  # ---------- DNS 上游：DIRECT 目标 ----------
+  # Mihomo 专用；发布器启用服务端 VLESS 中转后，DIRECT 查询会改用
+  # 国内 IP DoH，确保 DNS 与直连流量保持同一出口。
+  direct-nameserver:
+    - "https://1.1.1.1/dns-query#PROXY"
+    - "https://8.8.8.8/dns-query#PROXY"
+    - "https://1.0.0.1/dns-query#PROXY"
+  # Mihomo 命中上方策略时改用对应的国内 DNS。
+  direct-nameserver-follow-policy: true
+
+  # ---------- DNS 上游：普通域名 ----------
+  # 未进入专用解析器的域名使用国际 DoH，并跟随当前 PROXY 出口。
+  # 首选 SERVER.RELAY.VLESS.<出口名> 组只额外承担节点、Provider 和规则资源的启动链。
+  nameserver:
+    - "https://1.1.1.1/dns-query#PROXY"
+    - "https://8.8.8.8/dns-query#PROXY"
+    - "https://1.0.0.1/dns-query#PROXY"
+
+  # ---------- Fake-IP ----------
+  # fake-IP 内部地址池，不是公网地址。
+  fake-ip-range: 198.18.0.1/16
+  # 以下域名返回真实 IP；是否直连仍由路由规则决定。
+  fake-ip-filter:
+    # 稳定公网入口由发布器动态插入第一项，避免切换到 AWG 时沿用 Fake-IP。
+    # 局域网设备发现。
+    - +.lan
+    - +.local
+    # 校时服务。
+    - time.*.com
+    - ntp.*.com
+    # 应用和 Windows 联网检测。
+    - +.market.xiaomi.com
+    - +.msftconnecttest.com
+    - +.msftncsi.com
+    # QQ 登录。
+    - localhost.ptlogin2.qq.com
+    # STUN 保留 fake-IP，降低真实 IP 流量误走直连的风险。
+    # - stun.*.*.*
+    # - stun.*.*

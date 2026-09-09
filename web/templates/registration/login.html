@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block title %}登录 · server-kit{% endblock %}
+
+{% block body %}
+<main class="login-shell">
+  {% include "dashboard/_theme_picker.html" with theme_picker_class="login-theme-picker" %}
+  <section class="login-card">
+    <div class="brand-mark">SK</div>
+    <p class="eyebrow">内网管理平面</p>
+    <h1>登录 server-kit</h1>
+    <p class="muted">仅允许从已授权的 AWG 或 VLESS 管理员节点访问。</p>
+    {% if form.errors %}<div class="alert danger">用户名或密码不正确。</div>{% endif %}
+    <form method="post" class="form-stack">
+      {% csrf_token %}
+      <label>用户名{{ form.username }}</label>
+      <label>密码{{ form.password }}</label>
+      {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+      <button type="submit" class="primary-button">登录</button>
+    </form>
+  </section>
+</main>
+{% endblock %}

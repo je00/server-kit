@@ -1,0 +1,32 @@
+[Unit]
+Description=server-kit 内网管理网站
+After=network-online.target server-kit-agent.socket awg-quick@@AWG_IFACE@.service
+Wants=network-online.target server-kit-agent.socket
+
+[Service]
+Type=simple
+User=server-kit-web
+Group=server-kit-web
+WorkingDirectory=@APP_DIR@/web
+Environment=PYTHONPATH=@APP_DIR@
+Environment=SERVER_KIT_WEB_STATE=@STATE_DIR@
+Environment=SERVER_KIT_SECRET_KEY_FILE=@SECRET_PATH@
+Environment=SERVER_KIT_ALLOWED_HOSTS=@AWG_IP@
+Environment=SERVER_KIT_AGENT_SOCKET=/run/server-kit/manager.sock
+Environment=SERVER_KIT_BACKUP_DIR=/var/lib/server-kit-backups
+ExecStart=@VENV_DIR@/bin/python -m uvicorn server_kit_web.asgi:application --host @AWG_IP@ --port @WEB_PORT@ --workers 1 --no-proxy-headers --no-server-header
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=@APP_DIR@ @SECRET_PATH@ -/var/lib/server-kit-backups
+ReadWritePaths=@STATE_DIR@
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+UMask=0077
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,71 @@
+{
+  "files": [
+    {
+      "path": "manifest.json",
+      "sha256": "0535a4c71f484acfb0d8fda075e8d47f44e8659ad85a2787dbeba0b8bc070635",
+      "size": 611
+    },
+    {
+      "path": "popup.html",
+      "sha256": "3603e9eab36719ff5c8f330598bc48dd10d96042aebcf2d682b5ffb49cde0ff4",
+      "size": 3905
+    },
+    {
+      "path": "popup.css",
+      "sha256": "a16588d32e1de37385f4aae2eb63007c0a4d11125223a7a32cb86d0660d03055",
+      "size": 3580
+    },
+    {
+      "path": "popup.js",
+      "sha256": "b87afe81203c5f9cf967312ab081bf7a03872dc10ed643eb419ab84a34cc0808",
+      "size": 8846
+    },
+    {
+      "path": "service_worker.js",
+      "sha256": "13bafb76c7d46af6ac63c36f1fac5faf14ee8b073ebe1ffe177818881b2bb01b",
+      "size": 501
+    },
+    {
+      "path": "session_store.js",
+      "sha256": "12dbb08fc7e7f7bca5ca1604fb96e3a3f01e22251542c0836159b254a3bf13bf",
+      "size": 1327
+    },
+    {
+      "path": "awg.js",
+      "sha256": "c3146e885032443779969337fe9bbac0fcf042b7fd2f86a4dfb2656efe1db5e6",
+      "size": 6342
+    },
+    {
+      "path": "icons/icon-16.png",
+      "sha256": "6e7fcba1c37a5e37787c3fe4c955bd6d104cbd912023dda80b7d52af191f2f45",
+      "size": 766
+    },
+    {
+      "path": "icons/icon-32.png",
+      "sha256": "4bc7b097bdf3e4f6c1dd7d28cb0dc9ee94fafb0ef2386ee1733b72ebcffc72c5",
+      "size": 1681
+    },
+    {
+      "path": "icons/icon-48.png",
+      "sha256": "6541e94836f121d7e83a03efd9f38c673f0470d0eea449f71d21370354d3b599",
+      "size": 2221
+    },
+    {
+      "path": "icons/icon-128.png",
+      "sha256": "1ef2b33750d90723bc78d68ea22268391a04710394701e32f663c57189d53944",
+      "size": 6387
+    },
+    {
+      "path": "vendor/qrcode.js",
+      "sha256": "c25580913de5d1d87834031e3ed474953a93235766e9537c1f1bc4e3c5c43979",
+      "size": 20506
+    }
+  ],
+  "name": "server-kit 本地密钥生成器",
+  "package": "server-kit-local-key-generator-0.4.1.zip",
+  "package_sha256": "d1d05276f552f9f1112a1a60945b39d6b6f53d78d832f47e315ffb40e5057d85",
+  "package_size": 57935,
+  "schema_version": 1,
+  "source_tree_sha256": "91e66344650502696e29499992c9a7f5e0bcb6428ea3ffcbe1e4fe7e796e01e0",
+  "version": "0.4.1"
+}

@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block title %}确认防火墙端口变更 · server-kit{% endblock %}
+
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main class="content detail-content narrow-content">
+    <a class="back-link" href="{% url 'service-detail' 'firewall' %}">← 返回防火墙</a>
+    <header class="page-header"><div><p class="eyebrow">root 实时影响预览</p><h1>{{ task.preview.title }}</h1><p class="muted">{{ task.preview.summary }}</p></div><span class="stage-badge">{{ task.state_label }}</span></header>
+    {% if operation == "open" and scope == "public" %}<div class="alert danger">这是公网端口，互联网上的任意来源都可以尝试连接；端口服务必须自行认证。</div>{% endif %}
+    <section class="inventory-panel">
+      <dl class="fact-grid">{% for label, value in task.preview.facts.items %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
+      <form class="confirm-actions" method="post" action="{% url 'firewall-port-execute' %}">{% csrf_token %}<input type="hidden" name="task_id" value="{{ task.id }}"><a class="secondary-button" href="{% url 'service-detail' 'firewall' %}">取消</a><button class="action-button{% if operation == 'close' or scope == 'public' %} danger-button{% endif %}" type="submit">确认提交任务</button></form>
+    </section>
+  </main>
+</div>
+{% endblock %}

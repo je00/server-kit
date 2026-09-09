@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}文件资源 · server-kit{% endblock %}
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main class="content detail-content">
+    {% include "dashboard/_messages.html" %}
+    <header class="page-header"><div><p class="eyebrow">普通文件发布</p><h1>文件资源</h1><p class="muted">每个文件使用独立访问令牌，支持断点续传和 CDN 缓存。</p></div><span class="status-pill state-pill state-{{ file_service.state }}">{{ file_service.state }}</span></header>
+    {% if snapshot_error %}<div class="alert danger">{{ snapshot_error }}</div>{% endif %}
+    {% if files.configured and not service_running %}<div class="alert neutral service-state-alert"><span>配置和文件仍保留，但服务当前为“{{ file_service.state }}”，所有下载链接暂不可用。</span><a class="secondary-button compact-button" href="{% url 'service-detail' 'file' %}">查看并启动服务</a></div>{% endif %}
+
+    {% if request.user.is_superuser and files.configured %}
+    <section class="inventory-panel">
+      <div class="section-heading"><div><p class="eyebrow">新增资源</p><h2>上传并发布</h2></div><span class="muted">最大 {{ max_upload_label }}</span></div>
+      <form class="resource-upload-form" method="post" action="{% url 'file-resource-add' %}" enctype="multipart/form-data">
+        {% csrf_token %}
+        <label>选择文件<input type="file" name="payload" required></label>
+        <label>下载文件名（可留空）<input type="text" name="download_name" maxlength="128" placeholder="默认使用上传文件名"></label>
+        <label>CDN 缓存时间<select name="cache_ttl"><option value="3600">1 小时</option><option value="86400" selected>1 天</option><option value="604800">7 天</option><option value="2592000">30 天</option></select></label>
+        <label class="check-row"><input type="checkbox" name="cdn_cache" value="yes" checked>允许 CDN 缓存，降低源站压力</label>
+        <label>当前账号密码<input type="password" name="password" required autocomplete="current-password"></label>
+        <input type="hidden" name="confirmed" value="yes">
+        <button class="primary-button" type="submit">上传并发布</button>
+      </form>
+      <p class="privacy-note">上传内容直接流入磁盘，不会整体载入管理网站内存。缓存链接包含访问令牌，请只交给可信 CDN。</p>
+    </section>
+    {% endif %}
+
+    <section class="inventory-panel">
+      <div class="section-heading"><div><p class="eyebrow">已保存资源</p><h2>{{ files.items|length }} 个文件</h2></div></div>
+      {% if request.user.is_superuser and not sensitive_unlocked %}
+      <form class="unlock-row" method="post" action="{% url 'sensitive-unlock' %}">{% csrf_token %}<input type="hidden" name="destination" value="files"><label>查看链接和二维码<input type="password" name="password" required autocomplete="current-password" placeholder="输入当前账号密码"></label><button class="secondary-button compact-button" type="submit">解锁 5 分钟</button></form>
+      {% endif %}
+      <div class="inventory-list">
+        {% for item in files.items %}
+        <article><div><strong>{{ item.name }}</strong><p>{{ item.size_label }} · {{ item.cache_label }}</p></div><div class="item-tools">
+          <span class="item-state">{% if service_running %}可下载{% else %}暂不可下载{% endif %}</span>
+          <div class="item-actions">
+            {% if request.user.is_superuser and sensitive_unlocked %}<form>{% csrf_token %}<button class="copy-button" type="button" data-secret-action="copy" data-endpoint="{% url 'file-resource-secret' item.resource_id 'link' %}">复制链接</button></form><form>{% csrf_token %}<button class="copy-button qr-button" type="button" data-secret-action="qr" data-endpoint="{% url 'file-resource-secret' item.resource_id 'qr' %}">显示二维码</button></form>{% endif %}
+            {% if request.user.is_superuser %}<form method="post" action="{% url 'file-resource-delete-preview' item.resource_id %}">{% csrf_token %}<button class="copy-button danger-quiet" type="submit">删除</button></form>{% endif %}
+          </div>
+        </div></article>
+        {% empty %}<p class="muted">暂无文件资源，可以从上方上传第一份文件。</p>{% endfor %}
+      </div>
+      <p class="privacy-note">删除源站文件不会主动清除第三方 CDN 缓存；缓存副本最迟在所设有效期结束后失效。</p>
+    </section>
+  </main>
+</div>
+{% if request.user.is_superuser %}<div class="qr-modal" data-qr-modal hidden><div class="qr-backdrop" data-qr-close></div><section class="qr-dialog" role="dialog" aria-modal="true" aria-labelledby="file-qr-title"><button class="qr-close" type="button" data-qr-close aria-label="关闭">×</button><p class="eyebrow">文件资源</p><h2 id="file-qr-title" data-qr-title>下载二维码</h2><div class="qr-frame"><img class="qr-image" data-qr-image alt=""></div><p class="qr-note">二维码包含访问令牌。关闭后立即从页面移除。</p></section></div>{% endif %}
+{% endblock %}

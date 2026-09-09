@@ -1,0 +1,12 @@
+[Unit]
+Description=定期确认或撤销待登记 AWG 节点
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=15s
+AccuracySec=1s
+RandomizedDelaySec=2s
+Unit=server-kit-awg-enrollment.service
+
+[Install]
+WantedBy=timers.target

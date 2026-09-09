@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block title %}管理账号 · server-kit{% endblock %}
+
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main class="content detail-content">
+    <header class="page-header"><div><p class="eyebrow">本机认证</p><h1>管理账号</h1><p class="muted">超级管理员可读取敏感配置并维护账号；管理员可管理服务、节点和订阅；只读账号只能查看脱敏状态与审计。</p></div><span class="stage-badge">{{ accounts|length }} 个账号</span></header>
+    {% include "dashboard/_messages.html" %}
+    <section class="action-panel"><p class="eyebrow">新增账号</p><h2>创建本机管理身份</h2><form class="account-create-form" method="post">{% csrf_token %}<input type="hidden" name="operation" value="create"><label>账号名<input name="username" required maxlength="150" autocomplete="off"></label><label>角色<select name="role"><option value="admin">管理员</option><option value="viewer">只读</option><option value="superuser">超级管理员</option></select></label><label>新账号密码<input type="password" name="new_password" required autocomplete="new-password"></label><label>当前账号密码<input type="password" name="current_password" required autocomplete="current-password"></label><label class="check-row"><input type="checkbox" name="confirmed" value="yes" required><span>确认创建账号并按所选角色授权。</span></label><button class="action-button" type="submit">创建账号</button></form></section>
+    <section class="inventory-panel"><div class="section-heading"><div><p class="eyebrow">账号清单</p><h2>现有身份</h2></div></div><div class="account-list">{% for account in accounts %}<article><div><strong>{{ account.username }}</strong><p>{% if account.is_superuser %}超级管理员{% elif account.is_staff %}管理员{% else %}只读账号{% endif %} · {% if account.is_active %}已启用{% else %}已停用{% endif %}</p></div><div class="account-actions">{% if account.pk != request.user.pk %}<form method="post">{% csrf_token %}<input type="hidden" name="operation" value="{% if account.is_active %}disable{% else %}enable{% endif %}"><input type="hidden" name="user_id" value="{{ account.pk }}"><input type="password" name="current_password" required autocomplete="current-password" placeholder="当前账号密码"><input type="hidden" name="confirmed" value="yes"><button class="copy-button{% if account.is_active %} danger-quiet{% endif %}" type="submit">{% if account.is_active %}停用{% else %}启用{% endif %}</button></form>{% endif %}<details><summary class="copy-button">重置密码</summary><form method="post">{% csrf_token %}<input type="hidden" name="operation" value="reset_password"><input type="hidden" name="user_id" value="{{ account.pk }}"><label>新密码<input type="password" name="new_password" required autocomplete="new-password"></label><label>当前账号密码<input type="password" name="current_password" required autocomplete="current-password"></label><input type="hidden" name="confirmed" value="yes"><button class="secondary-button compact-button" type="submit">确认重置</button></form></details></div></article>{% endfor %}</div></section>
+  </main>
+</div>
+{% endblock %}

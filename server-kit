@@ -1,0 +1,755 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [[ -L "${SCRIPT_PATH}" ]]; do
+  SCRIPT_LINK_DIR="$(cd -P -- "$(dirname -- "${SCRIPT_PATH}")" && pwd)"
+  SCRIPT_PATH="$(readlink -- "${SCRIPT_PATH}")"
+  [[ "${SCRIPT_PATH}" == /* ]] || SCRIPT_PATH="${SCRIPT_LINK_DIR}/${SCRIPT_PATH}"
+done
+REPO_DIR="$(cd -P -- "$(dirname -- "${SCRIPT_PATH}")" && pwd)"
+
+SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-/usr/bin/systemctl}"
+APT_GET_BIN="${APT_GET_BIN:-/usr/bin/apt-get}"
+PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3}"
+RUNUSER_BIN="${RUNUSER_BIN:-/usr/sbin/runuser}"
+USERADD_BIN="${USERADD_BIN:-/usr/sbin/useradd}"
+GROUPADD_BIN="${GROUPADD_BIN:-/usr/sbin/groupadd}"
+GETENT_BIN="${GETENT_BIN:-/usr/bin/getent}"
+INSTALL_BIN="${INSTALL_BIN:-/usr/bin/install}"
+INSTALLER="${INSTALLER:-${REPO_DIR}/install-server-kit.sh}"
+AWG_MANAGER="${AWG_MANAGER:-${REPO_DIR}/amneziawg-setup.sh}"
+FIREWALL_MANAGER="${FIREWALL_MANAGER:-${REPO_DIR}/debian_firewall_manager.sh}"
+SECURITY_MANAGER="${SECURITY_MANAGER:-${REPO_DIR}/debian_security_manager.sh}"
+SERVICE_MANAGER="${SERVICE_MANAGER:-${REPO_DIR}/server-kit-manager.sh}"
+CLIENT_KEY_HELPER="${CLIENT_KEY_HELPER:-${REPO_DIR}/lib/server_kit_client_keys.py}"
+AWG_STATE="${AWG_STATE:-/etc/amneziawg/manager.conf}"
+SERVER_KIT_DIR="${SERVER_KIT_DIR:-/etc/server-kit}"
+WEB_CONFIG="${WEB_CONFIG:-${SERVER_KIT_DIR}/management.conf}"
+WEB_SECRET_DIR="${WEB_SECRET_DIR:-/etc/server-kit-web}"
+SECRET_PATH="${SECRET_PATH:-${WEB_SECRET_DIR}/secret-key}"
+LEGACY_SECRET_PATH="${LEGACY_SECRET_PATH:-${SERVER_KIT_DIR}/web-secret-key}"
+WEB_STATE_DIR="${WEB_STATE_DIR:-/var/lib/server-kit-web}"
+VENV_DIR="${VENV_DIR:-/opt/server-kit/web-venv}"
+RELEASES_DIR="${RELEASES_DIR:-/opt/server-kit/releases}"
+APP_DIR="${APP_DIR:-/opt/server-kit/current}"
+SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
+WEB_USER="server-kit-web"
+DEFAULT_WEB_PORT=9080
+COMMAND_BIN_DIR="${COMMAND_BIN_DIR:-/usr/local/bin}"
+MANAGED_COMMANDS=(
+  server-kit
+  amneziawg-setup.sh
+  debian_file_manager.sh
+  debian_vless_manager.sh
+  debian_mosh_manager.sh
+  debian_security_manager.sh
+  debian_firewall_manager.sh
+  server-kit-manager.sh
+  install-server-kit.sh
+)
+
+fail() {
+  echo "错误：$*" >&2
+  return 1
+}
+
+require_root() {
+  [[ "${SERVER_KIT_TESTING:-0}" == "1" || "${EUID}" -eq 0 ]] || {
+    fail "请使用 root 运行。"
+    exit 1
+  }
+}
+
+validate_repo_path() {
+  [[ "${REPO_DIR}" =~ ^/[A-Za-z0-9_./-]+$ ]] || {
+    fail "仓库路径只能包含字母、数字、点、下划线、斜线和连字符：${REPO_DIR}"
+    return 1
+  }
+}
+
+preflight() {
+  local version=""
+  local architecture=""
+  local -a client_key_arguments=(verify)
+  validate_repo_path
+  for path in \
+    "${INSTALLER}" "${AWG_MANAGER}" "${REPO_DIR}/web/manage.py" \
+    "${REPO_DIR}/web/requirements.lock" "${REPO_DIR}/control_plane/agent.py" \
+    "${REPO_DIR}/lib/server_kit_backup.py" \
+    "${REPO_DIR}/lib/server_kit_node_domains.py" \
+    "${REPO_DIR}/lib/server_kit_public_endpoint.py" \
+    "${REPO_DIR}/lib/server_kit_public_endpoint_transaction.py" \
+    "${REPO_DIR}/lib/server_kit_duckdns.py" \
+    "${REPO_DIR}/lib/server_kit_client_keys.py" \
+    "${REPO_DIR}/lib/server_kit_bootstrap.py"; do
+    [[ -r "${path}" ]] || { fail "缺少初始化文件：${path}"; return 1; }
+  done
+  if [[ "${SERVER_KIT_TESTING:-0}" == "1" ]]; then
+    client_key_arguments+=(--root "${REPO_DIR}")
+  fi
+  "${PYTHON_BIN}" "${CLIENT_KEY_HELPER}" "${client_key_arguments[@]}" || {
+    fail "AWG 节点凭据安全检查未通过，拒绝初始化或升级。"
+    return 1
+  }
+  if [[ "${SERVER_KIT_TESTING:-0}" != "1" ]]; then
+    [[ -r /etc/os-release ]] || { fail "无法识别操作系统。"; return 1; }
+    # shellcheck disable=SC1091
+    source /etc/os-release
+    [[ "${ID:-}" == "debian" ]] || { fail "首版只支持 Debian。"; return 1; }
+    version="${VERSION_ID%%.*}"
+    [[ "${version}" == "12" || "${version}" == "13" ]] || {
+      fail "首版只支持 Debian 12/13。"
+      return 1
+    }
+    architecture="$(dpkg --print-architecture)"
+    [[ "${architecture}" == "amd64" ]] || { fail "首版只支持 amd64。"; return 1; }
+    [[ -d /run/systemd/system ]] || { fail "当前系统没有运行 systemd。"; return 1; }
+  fi
+  echo "初始化预检通过。"
+  echo "范围：Debian 12/13 amd64、AWG 管理入口、内网管理网站。"
+  echo "边界：不会修改 SSH，也不会应用或重写主机防火墙。"
+}
+
+read_assignment() {
+  local path="$1"
+  local key="$2"
+  [[ -r "${path}" ]] || return 1
+  sed -n "s/^${key}=//p" "${path}" | tail -n 1 | sed -e 's/^['\"'\'']//;s/['\"'\'']$//'
+}
+
+prompt_value() {
+  local prompt="$1"
+  local default_value="$2"
+  local value=""
+  if [[ ! -t 0 ]]; then
+    fail "初始化需要交互式终端。"
+    return 1
+  fi
+  read -r -p "${prompt} [${default_value}]：" value
+  printf '%s\n' "${value:-${default_value}}"
+}
+
+ensure_awg() {
+  if [[ ! -r "${AWG_STATE}" ]]; then
+    echo "尚未安装 AWG，开始最小安装..."
+    bash "${AWG_MANAGER}" install
+  else
+    echo "检测到现有 AWG，直接接管状态，不重装、不重启、不轮换密钥。"
+  fi
+  [[ -r "${AWG_STATE}" ]] || { fail "AWG 安装后仍缺少状态文件。"; return 1; }
+}
+
+ensure_web_user() {
+  if ! "${GETENT_BIN}" group "${WEB_USER}" >/dev/null 2>&1; then
+    "${GROUPADD_BIN}" --system "${WEB_USER}"
+  fi
+  if ! "${GETENT_BIN}" passwd "${WEB_USER}" >/dev/null 2>&1; then
+    "${USERADD_BIN}" --system --gid "${WEB_USER}" --home-dir "${WEB_STATE_DIR}" \
+      --create-home --shell /usr/sbin/nologin "${WEB_USER}"
+  fi
+  install -d -m 700 -o "${WEB_USER}" -g "${WEB_USER}" "${WEB_STATE_DIR}"
+  install -d -m 700 -o "${WEB_USER}" -g "${WEB_USER}" "${WEB_STATE_DIR}/uploads"
+  install -d -m 700 -o root -g root "${SERVER_KIT_DIR}"
+  # 独立目录避免其他服务规范共享配置目录权限时破坏 Web 密钥访问。
+  install -d -m 710 -o root -g "${WEB_USER}" "${WEB_SECRET_DIR}"
+}
+
+install_python_environment() {
+  local current_python_version=""
+  local venv_python_version=""
+  local venv_parent=""
+  local temp_venv=""
+  local old_venv=""
+
+  DEBIAN_FRONTEND=noninteractive "${APT_GET_BIN}" update
+  DEBIAN_FRONTEND=noninteractive "${APT_GET_BIN}" install -y \
+    python3-venv python3-cryptography python3-ruamel.yaml
+
+  [[ "${VENV_DIR}" == /* && "${VENV_DIR}" != "/" ]] || {
+    fail "虚拟环境必须使用安全的绝对路径：${VENV_DIR}"
+    return 1
+  }
+  current_python_version="$("${PYTHON_BIN}" -c \
+    'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+  if [[ -r "${VENV_DIR}/pyvenv.cfg" ]]; then
+    venv_python_version="$(sed -n \
+      's/^version = \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
+      "${VENV_DIR}/pyvenv.cfg" | head -n 1)"
+  fi
+
+  if [[ ! -x "${VENV_DIR}/bin/python" ||
+        "${venv_python_version}" != "${current_python_version}" ]] ||
+      ! "${VENV_DIR}/bin/python" -m pip --version >/dev/null 2>&1; then
+    venv_parent="$(dirname -- "${VENV_DIR}")"
+    "${INSTALL_BIN}" -d -m 755 -o root -g root "${venv_parent}"
+    temp_venv="$(mktemp -d "${venv_parent}/.web-venv.XXXXXX")"
+    echo "检测到 Python 运行环境变化，重建管理网站虚拟环境..."
+    if ! "${PYTHON_BIN}" -m venv "${temp_venv}" ||
+       ! "${temp_venv}/bin/python" -m pip install --require-hashes \
+          -r "${REPO_DIR}/web/requirements.lock"; then
+      rm -rf -- "${temp_venv}"
+      fail "管理网站虚拟环境重建失败，旧环境保持不变。"
+      return 1
+    fi
+    # 安全自动化可能使用 umask 077；Web 用户必须能遍历并读取这套 root 管理的依赖。
+    chmod -R a+rX -- "${temp_venv}"
+    if [[ -e "${VENV_DIR}" || -L "${VENV_DIR}" ]]; then
+      old_venv="${VENV_DIR}.old.$$"
+      mv -- "${VENV_DIR}" "${old_venv}"
+    fi
+    if ! mv -- "${temp_venv}" "${VENV_DIR}"; then
+      [[ -n "${old_venv}" ]] && mv -- "${old_venv}" "${VENV_DIR}"
+      rm -rf -- "${temp_venv}"
+      fail "无法启用新的管理网站虚拟环境。"
+      return 1
+    fi
+    [[ -z "${old_venv}" ]] || rm -rf -- "${old_venv}"
+  else
+    "${VENV_DIR}/bin/python" -m pip install --require-hashes \
+      -r "${REPO_DIR}/web/requirements.lock"
+    chmod -R a+rX -- "${VENV_DIR}"
+  fi
+}
+
+publish_management_app() {
+  local release_id=""
+  local release_path=""
+  local temp_link=""
+  local command_name=""
+  release_id="bootstrap-$(date -u +%Y%m%d%H%M%S)-$$"
+  release_path="${RELEASES_DIR}/${release_id}"
+  install -d -m 755 -o root -g root "${RELEASES_DIR}"
+  [[ ! -e "${release_path}" ]] || { fail "发布目录已存在：${release_path}"; return 1; }
+  install -d -m 755 -o root -g root "${release_path}"
+  cp -a -- \
+    "${REPO_DIR}/control_plane" \
+    "${REPO_DIR}/web" \
+    "${REPO_DIR}/lib" \
+    "${REPO_DIR}/management" \
+    "${REPO_DIR}/tools" \
+    "${release_path}/"
+  for command_name in "${MANAGED_COMMANDS[@]}"; do
+    cp -a -- "${REPO_DIR}/${command_name}" "${release_path}/${command_name}"
+  done
+  cp -a -- "${REPO_DIR}/clash_skeleton.yaml" "${release_path}/clash_skeleton.yaml"
+  find "${release_path}" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+  find "${release_path}" -depth -type d -name '__pycache__' -empty -delete
+  find "${release_path}" -type d -exec chmod 755 {} +
+  find "${release_path}" -type f -exec chmod 644 {} +
+  install -d -m 755 -o root -g root "$(dirname -- "${APP_DIR}")"
+  temp_link="$(dirname -- "${APP_DIR}")/.current.$$"
+  [[ ! -e "${temp_link}" && ! -L "${temp_link}" ]] || {
+    fail "临时版本链接已存在：${temp_link}"
+    return 1
+  }
+  ln -s -- "${release_path}" "${temp_link}"
+  if [[ ( -e "${APP_DIR}" || -L "${APP_DIR}" ) && ! -L "${APP_DIR}" ]]; then
+    rm -f -- "${temp_link}"
+    fail "当前版本路径存在且不是软连接：${APP_DIR}"
+    return 1
+  fi
+  mv -Tf -- "${temp_link}" "${APP_DIR}"
+}
+
+harden_web_database() {
+  local database_path=""
+  for database_path in \
+    "${WEB_STATE_DIR}/db.sqlite3" \
+    "${WEB_STATE_DIR}/db.sqlite3-wal" \
+    "${WEB_STATE_DIR}/db.sqlite3-shm" \
+    "${WEB_STATE_DIR}/db.sqlite3-journal"; do
+    [[ -e "${database_path}" ]] || continue
+    chown "${WEB_USER}:${WEB_USER}" -- "${database_path}"
+    chmod 600 -- "${database_path}"
+  done
+}
+
+capture_command_links() {
+  local output_path="$1"
+  local command_name=""
+  local link_path=""
+
+  : > "${output_path}"
+  for command_name in "${MANAGED_COMMANDS[@]}"; do
+    link_path="${COMMAND_BIN_DIR}/${command_name}"
+    if [[ -L "${link_path}" ]]; then
+      printf '%s\t%s\n' "${command_name}" "$(readlink -- "${link_path}")" >> "${output_path}"
+    elif [[ -e "${link_path}" ]]; then
+      fail "全局命令不是受管软连接：${link_path}"
+      return 1
+    else
+      printf '%s\t%s\n' "${command_name}" "__SERVER_KIT_ABSENT__" >> "${output_path}"
+    fi
+  done
+}
+
+restore_command_links() {
+  local input_path="$1"
+  local command_name=""
+  local target=""
+  local link_path=""
+
+  while IFS=$'\t' read -r command_name target; do
+    [[ -n "${command_name}" ]] || continue
+    link_path="${COMMAND_BIN_DIR}/${command_name}"
+    if [[ "${target}" == "__SERVER_KIT_ABSENT__" ]]; then
+      rm -f -- "${link_path}"
+    else
+      ln -sfn -- "${target}" "${link_path}"
+    fi
+  done < "${input_path}"
+}
+
+install_release_commands() {
+  local release_path="$1"
+  local command_name=""
+  local resolved=""
+
+  BIN_DIR="${COMMAND_BIN_DIR}" bash "${release_path}/install-server-kit.sh" install >/dev/null
+  for command_name in "${MANAGED_COMMANDS[@]}"; do
+    resolved="$(readlink -f -- "${COMMAND_BIN_DIR}/${command_name}" 2>/dev/null || true)"
+    [[ "${resolved}" == "${release_path}/${command_name}" ]] || {
+      fail "全局命令没有指向不可变发布目录：${command_name}"
+      return 1
+    }
+  done
+  "${COMMAND_BIN_DIR}/server-kit-manager.sh" snapshot | "${PYTHON_BIN}" -c \
+    'import json,sys; value=json.load(sys.stdin); raise SystemExit(0 if value.get("schema_version") == 1 else 1)'
+}
+
+activate_management_release() {
+  local target="$1"
+  local temp_link=""
+  [[ -d "${target}" ]] || { fail "管理网站版本目录不存在：${target}"; return 1; }
+  temp_link="$(dirname -- "${APP_DIR}")/.current-rollback.$$"
+  [[ ! -e "${temp_link}" && ! -L "${temp_link}" ]] || {
+    fail "版本切换临时路径已存在：${temp_link}"
+    return 1
+  }
+  ln -s -- "${target}" "${temp_link}"
+  mv -Tf -- "${temp_link}" "${APP_DIR}"
+}
+
+management_health_check() {
+  local awg_ip="$1"
+  local web_port="$2"
+  local attempt=0
+  for ((attempt = 1; attempt <= 10; attempt++)); do
+    if "${PYTHON_BIN}" - "http://${awg_ip}:${web_port}/healthz" <<'PYTHON'
+import json
+import sys
+import urllib.request
+
+try:
+    with urllib.request.urlopen(sys.argv[1], timeout=3) as response:
+        payload = json.load(response)
+except Exception:
+    raise SystemExit(1)
+if payload != {"status": "ok"}:
+    raise SystemExit(1)
+PYTHON
+    then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+management_agent_check() {
+  "${RUNUSER_BIN}" -u "${WEB_USER}" -- env \
+    PYTHONPATH="${APP_DIR}" \
+    SERVER_KIT_AGENT_SOCKET=/run/server-kit/manager.sock \
+    "${VENV_DIR}/bin/python" - <<'PYTHON'
+from control_plane.client import AgentClient
+
+result = AgentClient("/run/server-kit/manager.sock", timeout=5).request(
+    "host.read", {"intent": "overview", "service_id": ""}
+)
+snapshot = result.get("view", {})
+if result.get("schema_version") != 1 or snapshot.get("schema_version") != 1:
+    raise SystemExit(1)
+PYTHON
+}
+
+update_management() {
+  local awg_ip=""
+  local web_port=""
+  local old_release=""
+  local new_release=""
+  local command_links_backup=""
+  require_root
+  preflight
+  require_no_active_tasks
+  [[ -r "${WEB_CONFIG}" ]] || { fail "管理网站尚未初始化：${WEB_CONFIG}"; return 1; }
+  awg_ip="$(read_assignment "${WEB_CONFIG}" MANAGEMENT_AWG_IP 2>/dev/null || true)"
+  web_port="$(read_assignment "${WEB_CONFIG}" MANAGEMENT_PORT 2>/dev/null || true)"
+  [[ "${awg_ip}" =~ ^10\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    fail "管理网站 AWG 地址无效：${awg_ip}"
+    return 1
+  }
+  [[ "${web_port}" =~ ^[0-9]+$ ]] && (( web_port >= 1024 && web_port <= 65535 )) || {
+    fail "管理网站端口无效：${web_port}"
+    return 1
+  }
+  old_release="$(readlink -f -- "${APP_DIR}" 2>/dev/null || true)"
+  [[ -n "${old_release}" && -d "${old_release}" ]] || {
+    fail "无法确定当前管理网站版本，拒绝更新。"
+    return 1
+  }
+
+  ensure_web_user
+  ensure_root_ssh_directory
+  install_python_environment
+  publish_management_app
+  new_release="$(readlink -f -- "${APP_DIR}")"
+  ensure_secret
+
+  if ! run_web_manage "${awg_ip}" migrate --noinput ||
+     ! harden_web_database ||
+     ! run_web_manage "${awg_ip}" collectstatic --noinput >/dev/null; then
+    activate_management_release "${old_release}"
+    fail "新版本数据库或静态文件准备失败，已恢复旧版本。"
+    return 1
+  fi
+
+  render_unit "${REPO_DIR}/management/systemd/server-kit-agent.socket.in" \
+    "${SYSTEMD_DIR}/server-kit-agent.socket" "${awg_ip}" "${web_port}"
+  render_unit "${REPO_DIR}/management/systemd/server-kit-agent.service.in" \
+    "${SYSTEMD_DIR}/server-kit-agent.service" "${awg_ip}" "${web_port}"
+  render_unit "${REPO_DIR}/management/systemd/server-kit-web.service.in" \
+    "${SYSTEMD_DIR}/server-kit-web.service" "${awg_ip}" "${web_port}"
+  render_unit "${REPO_DIR}/management/systemd/server-kit-awg-enrollment.service.in" \
+    "${SYSTEMD_DIR}/server-kit-awg-enrollment.service" "${awg_ip}" "${web_port}"
+  render_unit "${REPO_DIR}/management/systemd/server-kit-awg-enrollment.timer.in" \
+    "${SYSTEMD_DIR}/server-kit-awg-enrollment.timer" "${awg_ip}" "${web_port}"
+  render_unit "${REPO_DIR}/management/systemd/server-kit-duckdns.service.in" \
+    "${SYSTEMD_DIR}/server-kit-duckdns.service" "${awg_ip}" "${web_port}"
+  render_unit "${REPO_DIR}/management/systemd/server-kit-duckdns.timer.in" \
+    "${SYSTEMD_DIR}/server-kit-duckdns.timer" "${awg_ip}" "${web_port}"
+  "${SYSTEMCTL_BIN}" daemon-reload
+
+  command_links_backup="$(mktemp)"
+  if ! capture_command_links "${command_links_backup}" ||
+     ! install_release_commands "${new_release}"; then
+    restore_command_links "${command_links_backup}" || true
+    rm -f -- "${command_links_backup}"
+    activate_management_release "${old_release}"
+    "${SYSTEMCTL_BIN}" restart server-kit-agent.service server-kit-web.service || true
+    fail "全局命令健康检查失败，已恢复旧版本和旧命令。"
+    return 1
+  fi
+
+  if ! "${SYSTEMCTL_BIN}" restart server-kit-agent.service server-kit-web.service ||
+     ! "${SYSTEMCTL_BIN}" enable --now server-kit-awg-enrollment.timer ||
+     ! management_health_check "${awg_ip}" "${web_port}" ||
+     ! management_agent_check; then
+    restore_command_links "${command_links_backup}" || true
+    rm -f -- "${command_links_backup}"
+    activate_management_release "${old_release}"
+    "${SYSTEMCTL_BIN}" restart server-kit-agent.service server-kit-web.service || true
+    fail "新版本健康检查失败，已恢复旧版本。"
+    return 1
+  fi
+  rm -f -- "${command_links_backup}"
+
+  echo "管理网站已原子更新。"
+  echo "旧版本：${old_release}"
+  echo "当前版本：${new_release}"
+  echo "管理地址：http://${awg_ip}:${web_port}"
+  echo "未修改管理员密码、AWG、SSH 或防火墙。"
+}
+
+ensure_root_ssh_directory() {
+  if [[ -L /root/.ssh || ( -e /root/.ssh && ! -d /root/.ssh ) ]]; then
+    fail "/root/.ssh 类型异常，拒绝向权限代理开放写路径。"
+    return 1
+  fi
+
+  if [[ ! -d /root/.ssh ]]; then
+    install -d -m 700 -o root -g root /root/.ssh
+  fi
+}
+
+ensure_secret() {
+  local temp_path=""
+  if [[ ! -r "${SECRET_PATH}" ]]; then
+    temp_path="$(mktemp "${WEB_SECRET_DIR}/.secret.XXXXXX")"
+    if [[ -r "${LEGACY_SECRET_PATH}" ]]; then
+      cp -- "${LEGACY_SECRET_PATH}" "${temp_path}"
+    else
+      "${PYTHON_BIN}" -c 'import secrets; print(secrets.token_hex(32))' > "${temp_path}"
+    fi
+    install -m 640 -o root -g "${WEB_USER}" "${temp_path}" "${SECRET_PATH}"
+    rm -f -- "${temp_path}"
+  fi
+}
+
+render_unit() {
+  local template="$1"
+  local target="$2"
+  local awg_ip="$3"
+  local web_port="$4"
+  local awg_iface=""
+  awg_iface="$(read_assignment "${AWG_STATE}" AWG_IFACE 2>/dev/null || echo awg0)"
+  sed \
+    -e "s|@APP_DIR@|${APP_DIR}|g" \
+    -e "s|@VENV_DIR@|${VENV_DIR}|g" \
+    -e "s|@PYTHON_BIN@|${PYTHON_BIN}|g" \
+    -e "s|@STATE_DIR@|${WEB_STATE_DIR}|g" \
+    -e "s|@AWG_IP@|${awg_ip}|g" \
+    -e "s|@AWG_IFACE@|${awg_iface}|g" \
+    -e "s|@WEB_PORT@|${web_port}|g" \
+    -e "s|@SECRET_PATH@|${SECRET_PATH}|g" \
+    "${template}" | install -m 644 -o root -g root /dev/stdin "${target}"
+}
+
+save_web_config() {
+  local awg_ip="$1"
+  local web_port="$2"
+  local admin_peer="$3"
+  local owner_name="$4"
+  local temp_path=""
+  temp_path="$(mktemp "${SERVER_KIT_DIR}/.management.XXXXXX")"
+  {
+    printf 'MANAGEMENT_ENABLED=yes\n'
+    printf 'MANAGEMENT_AWG_IP=%q\n' "${awg_ip}"
+    printf 'MANAGEMENT_PORT=%q\n' "${web_port}"
+    printf 'MANAGEMENT_ADMIN_PEER=%q\n' "${admin_peer}"
+    printf 'MANAGEMENT_OWNER=%q\n' "${owner_name}"
+  } > "${temp_path}"
+  install -m 600 -o root -g root "${temp_path}" "${WEB_CONFIG}"
+  rm -f -- "${temp_path}"
+}
+
+run_web_manage() {
+  "${RUNUSER_BIN}" -u "${WEB_USER}" -- env \
+    SERVER_KIT_WEB_STATE="${WEB_STATE_DIR}" \
+    SERVER_KIT_SECRET_KEY_FILE="${SECRET_PATH}" \
+    SERVER_KIT_ALLOWED_HOSTS="${1}" \
+    "${VENV_DIR}/bin/python" "${APP_DIR}/web/manage.py" "${@:2}"
+}
+
+install_management_plane() {
+  local awg_ip="$1"
+  local web_port="$2"
+  local admin_peer="$3"
+  local owner_name="$4"
+  [[ "${web_port}" =~ ^[0-9]+$ ]] && (( web_port >= 1024 && web_port <= 65535 )) || {
+    fail "管理端口必须是 1024–65535。"
+    return 1
+  }
+  [[ "${owner_name}" =~ ^[A-Za-z0-9_@.+-]{1,150}$ ]] || {
+    fail "管理员用户名格式不正确。"
+    return 1
+  }
+  ensure_web_user
+  ensure_root_ssh_directory
+  install_python_environment
+  publish_management_app
+  ensure_secret
+  run_web_manage "${awg_ip}" migrate --noinput
+  harden_web_database
+  run_web_manage "${awg_ip}" collectstatic --noinput --clear >/dev/null
+  run_web_manage "${awg_ip}" bootstrap_owner --username "${owner_name}"
+  render_unit "${REPO_DIR}/management/systemd/server-kit-agent.socket.in" \
+    "${SYSTEMD_DIR}/server-kit-agent.socket" "${awg_ip}" "${web_port}"
+  render_unit "${REPO_DIR}/management/systemd/server-kit-agent.service.in" \
+    "${SYSTEMD_DIR}/server-kit-agent.service" "${awg_ip}" "${web_port}"
+  render_unit "${REPO_DIR}/management/systemd/server-kit-web.service.in" \
+    "${SYSTEMD_DIR}/server-kit-web.service" "${awg_ip}" "${web_port}"
+  render_unit "${REPO_DIR}/management/systemd/server-kit-awg-enrollment.service.in" \
+    "${SYSTEMD_DIR}/server-kit-awg-enrollment.service" "${awg_ip}" "${web_port}"
+  render_unit "${REPO_DIR}/management/systemd/server-kit-awg-enrollment.timer.in" \
+    "${SYSTEMD_DIR}/server-kit-awg-enrollment.timer" "${awg_ip}" "${web_port}"
+  render_unit "${REPO_DIR}/management/systemd/server-kit-duckdns.service.in" \
+    "${SYSTEMD_DIR}/server-kit-duckdns.service" "${awg_ip}" "${web_port}"
+  render_unit "${REPO_DIR}/management/systemd/server-kit-duckdns.timer.in" \
+    "${SYSTEMD_DIR}/server-kit-duckdns.timer" "${awg_ip}" "${web_port}"
+  save_web_config "${awg_ip}" "${web_port}" "${admin_peer}" "${owner_name}"
+  "${SYSTEMCTL_BIN}" daemon-reload
+  "${SYSTEMCTL_BIN}" enable --now server-kit-agent.socket server-kit-web.service server-kit-awg-enrollment.timer
+  install_release_commands "$(readlink -f -- "${APP_DIR}")"
+}
+
+init_management() {
+  local owner_name=""
+  local web_port=""
+  local awg_ip=""
+  require_root
+  preflight
+  require_no_active_tasks
+  echo
+  echo "初始化只建立 AWG 管理入口和内网网站，不会修改 SSH 或主机防火墙。"
+  ensure_awg
+  owner_name="$(prompt_value "首个超级管理员用户名" "owner")"
+  web_port="$(prompt_value "管理网站内网 TCP 端口" "${DEFAULT_WEB_PORT}")"
+  awg_ip="$(read_assignment "${AWG_STATE}" AWG_SERVER_IP)"
+  [[ "${awg_ip}" =~ ^10\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    fail "AWG 服务端地址无效：${awg_ip}"
+    return 1
+  }
+  install_management_plane "${awg_ip}" "${web_port}" "" "${owner_name}"
+  echo
+  echo "管理平面初始化完成。"
+  echo "管理地址：http://${awg_ip}:${web_port}"
+  echo "管理员节点：首次登录网页后新增普通节点，并将其设为管理入口。"
+  echo "客户端配置：由管理网页在当前浏览器生成，VPS 不保存私钥或完整配置。"
+  echo "恢复入口：server-kit recovery"
+  echo
+  echo "首次登录请保持当前 SSH 可用，并在客户端另开终端执行："
+  echo "  ssh -L ${web_port}:${awg_ip}:${web_port} <服务器 SSH 地址>"
+  echo "然后打开：http://127.0.0.1:${web_port}"
+  echo "创建并连接首个普通节点后，即可改用：http://${awg_ip}:${web_port}"
+  if "${SYSTEMCTL_BIN}" is-active --quiet server-kit-firewall.service; then
+    echo "检测到现有默认拒绝防火墙；初始化按约定没有修改规则。"
+  fi
+}
+
+show_status() {
+  local awg_ip=""
+  local web_port=""
+  awg_ip="$(read_assignment "${WEB_CONFIG}" MANAGEMENT_AWG_IP 2>/dev/null || true)"
+  web_port="$(read_assignment "${WEB_CONFIG}" MANAGEMENT_PORT 2>/dev/null || true)"
+  echo "server-kit 管理平面"
+  echo "配置：${WEB_CONFIG}"
+  echo "地址：http://${awg_ip:-<未配置>}:${web_port:-<未配置>}"
+  "${SYSTEMCTL_BIN}" --no-pager --full status server-kit-agent.socket server-kit-web.service || true
+}
+
+run_task_cli() {
+  local cli_path="${APP_DIR}/control_plane/task_cli.py"
+  local cli_python="${VENV_DIR}/bin/python"
+  if [[ ! -r "${cli_path}" || ! -x "${cli_python}" ]]; then
+    cli_path="${REPO_DIR}/control_plane/task_cli.py"
+    cli_python="${PYTHON_BIN}"
+  fi
+  [[ -r "${cli_path}" ]] || { fail "缺少异步任务命令：${cli_path}"; return 1; }
+  "${cli_python}" "${cli_path}" "$@"
+}
+
+require_no_active_tasks() {
+  local agent_socket="${SERVER_KIT_AGENT_SOCKET:-/run/server-kit/manager.sock}"
+  local task_status=0
+  [[ -S "${agent_socket}" ]] || return 0
+  if run_task_cli --socket "${agent_socket}" active >/dev/null; then
+    return 0
+  else
+    task_status=$?
+  fi
+  if [[ "${task_status}" == "4" ]]; then
+    echo "检测到旧管理代理，将执行首次任务引擎迁移。"
+    return 0
+  fi
+  fail "存在活动变更任务，拒绝初始化、更新或卸载管理平面。请先等待任务结束或取消待执行任务。"
+  return 1
+}
+
+recovery_menu() {
+  local answer=""
+  local awg_iface=""
+  local owner_name=""
+  local awg_ip=""
+  local endpoint_status=""
+  local endpoint_transaction_id=""
+  require_root
+  awg_iface="$(read_assignment "${AWG_STATE}" AWG_IFACE 2>/dev/null || echo awg0)"
+  owner_name="$(read_assignment "${WEB_CONFIG}" MANAGEMENT_OWNER 2>/dev/null || true)"
+  awg_ip="$(read_assignment "${WEB_CONFIG}" MANAGEMENT_AWG_IP 2>/dev/null || true)"
+  cat <<EOF
+server-kit 恢复入口
+
+  1. 查看管理平面状态
+  2. 恢复 AWG 和管理网站
+  3. 重置超级管理员密码
+  4. 回滚待确认防火墙事务
+  5. 回滚待确认配置恢复事务
+  6. 回滚待确认 SSH 监听事务
+  7. 确认保留 SSH 监听事务
+  8. 回滚待确认 SSH 认证事务
+  9. 确认保留 SSH 认证事务
+  10. 回滚待确认稳定公网入口事务
+  11. 回滚待确认 VLESS 公网监听事务
+  0. 退出
+EOF
+  read -r -p "请选择：" answer
+  case "${answer}" in
+    1) show_status ;;
+    2)
+      "${SYSTEMCTL_BIN}" start "awg-quick@${awg_iface}.service"
+      "${SYSTEMCTL_BIN}" restart server-kit-agent.socket server-kit-web.service
+      echo "AWG 和管理网站已恢复。"
+      ;;
+    3)
+      [[ -n "${owner_name}" && -n "${awg_ip}" ]] || { fail "管理网站尚未初始化。"; return 1; }
+      run_web_manage "${awg_ip}" changepassword "${owner_name}"
+      ;;
+    4) bash "${FIREWALL_MANAGER}" rollback ;;
+    5) bash "${SERVICE_MANAGER}" backup restore-rollback --json ;;
+    6) bash "${SECURITY_MANAGER}" rollback-ssh ;;
+    7) bash "${SECURITY_MANAGER}" confirm-ssh --yes ;;
+    8) bash "${SECURITY_MANAGER}" rollback-ssh-auth ;;
+    9) bash "${SECURITY_MANAGER}" confirm-ssh-auth --yes ;;
+    10)
+      endpoint_status="$(printf '%s\n' '{"fqdn":"","session_id":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","actor":"recovery-console","transaction_id":""}' | \
+        SERVER_KIT_CONTROL=1 SERVER_KIT_NETWORK_WRITES=1 \
+        bash "${SERVICE_MANAGER}" network public-endpoint transaction-status --json)" || return 1
+      endpoint_transaction_id="$(python3 -c 'import json,sys; value=json.load(sys.stdin); transaction_id=value.get("transaction_id", ""); raise SystemExit(1) if value.get("state") != "pending" or not isinstance(transaction_id, str) or len(transaction_id) != 64 else print(transaction_id)' <<<"${endpoint_status}")" || {
+        fail "当前没有可回滚的稳定公网入口事务。"
+        return 1
+      }
+      python3 - "${endpoint_transaction_id}" <<'PYTHON' | \
+        SERVER_KIT_CONTROL=1 SERVER_KIT_NETWORK_WRITES=1 \
+        bash "${SERVICE_MANAGER}" network public-endpoint rollback --json
+import json, sys
+json.dump({"fqdn":"","session_id":"c" * 64,"actor":"recovery-console","transaction_id":sys.argv[1]}, sys.stdout, separators=(",", ":"))
+print()
+PYTHON
+      ;;
+    11)
+      printf '%s\n' '{"session_id":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","actor":"recovery-console"}' | \
+        SERVER_KIT_CONTROL=1 SERVER_KIT_HIGH_RISK_WRITES=1 \
+        bash "${SERVICE_MANAGER}" transaction vless_listener rollback --json
+      ;;
+    0) return 0 ;;
+    *) fail "未知选项。" ;;
+  esac
+}
+
+usage() {
+  cat <<'EOF'
+server-kit 初始化与恢复入口
+
+  server-kit preflight    检查首版支持条件，不修改系统
+  server-kit init         引导初始化 AWG 管理入口和内网网站
+  server-kit update-web   原子更新现有管理网站，失败自动回退
+  server-kit status       查看管理平面状态
+  server-kit recovery     从 SSH 或控制台恢复管理入口
+  server-kit service <服务> <start|stop|restart> [--detach]
+                          预览并提交服务变更；默认等待完成
+  server-kit task <任务标识> [--wait|--cancel]
+                          查询脱离执行的任务
+  server-kit tasks        查看最近异步任务
+
+init 不修改 SSH，也不应用或重写主机防火墙。
+更新不修改管理员密码、AWG、SSH 或防火墙。
+EOF
+}
+
+case "${1:-help}" in
+  preflight) require_root; preflight ;;
+  init) init_management ;;
+  update-web) update_management ;;
+  status) require_root; show_status ;;
+  recovery) recovery_menu ;;
+  service|task|tasks)
+    require_root
+    task_command="$1"
+    shift
+    run_task_cli "${task_command}" "$@"
+    ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac

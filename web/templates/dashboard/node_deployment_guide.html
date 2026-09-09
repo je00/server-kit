@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block title %}节点部署指引 · server-kit{% endblock %}
+
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main class="content detail-content guide-page">
+    <header class="page-header guide-header">
+      <div>
+        <p class="eyebrow">首次配置</p>
+        <h1>把设备接入内网</h1>
+        <p class="muted">选择设备；需要哪个客户端，就在对应的导入步骤安装。</p>
+      </div>
+      <span class="stage-badge">按顺序完成</span>
+    </header>
+
+    <nav class="deployment-tabs" aria-label="部署内容">
+      <a href="{% url 'deployment-wizard' %}">服务器部署</a>
+      <a class="active" href="{% url 'node-deployment-guide' %}" aria-current="page">节点接入指引</a>
+    </nav>
+
+    <section class="guide-choice" aria-label="接入方式说明">
+      <div class="guide-choice-grid">
+        <p><span>电脑</span><strong>AmneziaWG + Clash Verge</strong><small>接入 AWG 内网，同时保留日常代理。</small></p>
+        <p><span>手机</span><strong>Stash / FlClash</strong><small>通过订阅访问明确授权的内网设备。</small></p>
+      </div>
+    </section>
+
+    <section class="guide-platforms" data-platform-guide data-default-platform="windows">
+      <div class="guide-platform-tabs" role="tablist" aria-label="选择设备">
+        {% for guide in platform_guides %}
+          <button id="guide-tab-{{ guide.platform }}" type="button" role="tab" aria-controls="guide-panel-{{ guide.platform }}" data-platform-button="{{ guide.platform }}">{{ guide.tab }}</button>
+        {% endfor %}
+      </div>
+
+      {% for guide in platform_guides %}
+        <section id="guide-panel-{{ guide.platform }}" class="guide-platform-panel" role="tabpanel" aria-labelledby="guide-tab-{{ guide.platform }}" data-platform-panel="{{ guide.platform }}"{% if guide.platform != "windows" %} hidden{% endif %}>
+          <div class="guide-panel-heading">
+            <div><p class="eyebrow">{{ guide.eyebrow }}</p><h2>{{ guide.title }}</h2><p>{{ guide.description }}</p></div>
+            <span class="stage-badge">{{ guide.badge }}</span>
+          </div>
+          <ol class="guide-steps">
+            {% for step in guide.steps %}
+              <li{% if step.element_id %} id="{{ step.element_id }}"{% endif %}>
+                <span class="guide-step-kind">{{ step.kind }}</span>
+                <strong>{{ step.title }}</strong>
+                {% if step.text %}<p>{{ step.text }}</p>{% endif %}
+
+                {% if step.apps %}
+                  <div class="guide-step-apps">
+                    {% for app in step.apps %}
+                      <a href="{{ app.url }}" target="_blank" rel="noopener noreferrer"><strong>{{ app.name }}</strong><span>{{ app.note }}</span></a>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+                {% if step.type == "manager" %}
+                  <a class="guide-step-open" data-guide-manager-link href="{% url step.manager_url %}{% if step.manager_anchor %}#{{ step.manager_anchor }}{% endif %}" target="_blank" rel="noopener noreferrer"><strong>{{ step.button }}</strong><span>在新标签打开</span></a>
+                  {% if step.linux_awg_setup %}
+                    <div class="guide-one-click">
+                      <div class="guide-download-actions">
+                        <a class="action-button" href="{% url 'linux-node-script-download' %}">下载 Linux 综合脚本</a>
+                        <a class="secondary-button" href="{% url 'sshd-script-archive-download' %}">下载全平台脚本包</a>
+                      </div>
+                      <p><strong>wget 下载：</strong></p>
+                      <code class="guide-command">wget {{ linux_node_script_url }}</code>
+                      <p><strong>准备文件：</strong>解压后，把 <code>*-main.conf</code>、<code>*-backup1.conf</code> 放入 <code>linux</code> 目录。</p>
+                      <p><strong>菜单操作：</strong>直接运行脚本，进入菜单后按提示选择，不需要记忆子命令。</p>
+                      <code class="guide-command">sudo bash ./linux/server-kit-node-linux.sh</code>
+                      <p class="muted">如需跳过菜单并直接安装：</p>
+                      <code class="guide-command">sudo bash ./linux/server-kit-node-linux.sh awg-install ./linux</code>
+                      <p class="muted">自动安装 AmneziaWG，自动识别同目录的主/备两份配置，校验后启用主入口并设置开机自启；同一菜单还支持直接启动或停用 AWG、切换备用入口、开关自启、SSH 与合盖策略，以及按需安装 Git、Vim、Codex、Claude Code、OpenClaw、Hermes、tmux、Mosh 和 Docker。安装前会展示完整命令，输入 yes 后才执行；自动化调用可在安装命令末尾加 <code>--yes</code>，命令预览仍会保留。</p>
+                      <details class="guide-inline-note"><summary>将中文用户目录切换为英文</summary><p>进入总菜单的“用户目录语言管理”，或运行 <code>sudo bash ./linux/server-kit-node-linux.sh userdirs-english</code>。命令会先展示迁移计划；自动化时可用 <code>sudo bash ./linux/server-kit-node-linux.sh userdirs-english --yes</code> 跳过确认，但不会跳过计划展示。</p></details>
+                      <details class="guide-inline-note"><summary>Debian / Ubuntu 笔记本合盖不休眠</summary><p><code>sudo bash ./linux/server-kit-node-linux.sh lid-ignore</code> 开启；<code>sudo bash ./linux/server-kit-node-linux.sh lid-status</code> 查看；<code>sudo bash ./linux/server-kit-node-linux.sh lid-default</code> 恢复系统默认。</p></details>
+                    </div>
+                  {% endif %}
+                  {% if step.windows_awg_autostart %}
+                    <details class="guide-inline-note">
+                      <summary>Windows 会自动连接吗？</summary>
+                      <p>会。导入主/备两份配置后，只需首次启用主入口；AmneziaWG 会把该隧道安装成“自动”启动的 Windows 服务，重启后无需先登录或打开客户端。备用入口保持停用。</p>
+                      <p>可在 <code>services.msc</code> 中检查“AmneziaWG Tunnel: 主入口配置名”，其启动类型应为“自动”。</p>
+                    </details>
+                  {% endif %}
+                {% elif step.type == "clash_tun" %}
+                  {% include "dashboard/_clash_verge_tun.html" %}
+                  {% if step.stash_note %}
+                    <details class="guide-inline-note"><summary>使用 Stash？</summary><p>打开“设置 → 隧道 → 跳过路由”，删除 <code>10.20.0.0/24</code> 和 <code>10.0.0.0/8</code>，保留 VPS 公网 IP 的 <code>/32</code>。</p></details>
+                  {% endif %}
+                {% elif step.type == "stash_route" %}
+                  <div class="guide-must-do"><strong>Stash → 设置 → 隧道 → 跳过路由</strong><ol><li>删除 <code>10.20.0.0/24</code>。</li><li>如果存在 <code>10.0.0.0/8</code>，也删除。</li><li>保留 VPS 公网 IP 的 <code>/32</code>。</li><li>保存后断开 Stash，再重新连接。</li></ol></div>
+                {% elif step.type == "ssh" %}
+                  <a class="action-button" href="{% url 'sshd-script-archive-download' %}">下载全平台脚本包</a>
+                  <p><strong>菜单操作：</strong>解压后直接运行对应脚本，进入菜单后按提示操作。</p>
+                  {% if step.platform == "windows" %}
+                    <code class="guide-command">双击 windows\server-kit-ssh.cmd</code>
+                  {% elif step.platform == "linux" %}
+                    <code class="guide-command">sudo bash ./linux/server-kit-node-linux.sh</code>
+                  {% elif step.platform == "macos" %}
+                    <code class="guide-command">sudo zsh ./macos/server-kit-ssh.sh</code>
+                  {% endif %}
+                  <p><strong>支持：</strong>查看监听/端口/防火墙/公钥/密码认证 · 启停服务 · 管理允许来源网段 · 管理密钥 · 安全启用仅公钥认证</p>
+                  <p class="muted">AWG 权限负责节点间隔离；只有 SSH 公钥认证能阻止掌握中转 VPS 的人直接登录本机。</p>
+                {% endif %}
+              </li>
+            {% endfor %}
+          </ol>
+        </section>
+      {% endfor %}
+    </section>
+
+    <section class="inventory-panel guide-finish">
+      <p class="eyebrow">安全底线</p>
+      <div class="guide-safety-grid">
+        <p><strong>一机一份</strong><span>每台设备使用自己的节点、订阅和 SSH 密钥。</span></p>
+        <p><strong>私钥不外发</strong><span>只复制 <code>.pub</code> 公钥，私钥永远留在生成它的设备上。</span></p>
+        <p><strong>丢失就撤销</strong><span>删除节点、轮换订阅令牌，并删除该设备对应的 SSH 公钥。</span></p>
+      </div>
+    </section>
+  </main>
+</div>
+{% endblock %}

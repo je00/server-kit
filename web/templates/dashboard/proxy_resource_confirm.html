@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block title %}确认更新代理资源 · server-kit{% endblock %}
+
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main class="content detail-content">
+    <a class="back-link" href="{% url 'network-proxy-resources' %}">← 返回代理资源</a>
+    <header class="page-header"><div><p class="eyebrow">脱敏影响预览</p><h1>{{ task.preview.title }}</h1><p class="muted">{{ task.preview.summary }}</p></div><span class="stage-badge">{{ task.state_label }}</span></header>
+    <section class="inventory-panel">
+      <dl class="fact-grid">{% for label, value in task.preview.facts.items %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
+      <div class="alert">机场链接、账号、密码和完整出口节点不会显示在本页，也不会以明文写入任务库或审计。</div>
+      <form method="post" action="{% url 'network-proxy-resource-execute' %}">{% csrf_token %}<input type="hidden" name="task_id" value="{{ task.id }}"><button class="action-button" type="submit">确认并后台刷新订阅</button></form>
+    </section>
+  </main>
+</div>
+{% endblock %}

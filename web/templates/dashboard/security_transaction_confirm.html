@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}确认安全事务 · server-kit{% endblock %}
+
+{% block body %}
+<main class="content confirm-content">
+  <section class="confirm-card">
+    <span class="stage-badge">高风险事务</span>
+    <p class="eyebrow">{{ transaction_type }}</p>
+    <h1>{{ operation_label }}</h1>
+    <p class="muted">{{ task.preview.summary }}</p>
+    <dl class="impact-list">
+      {% for label, value in task.preview.facts.items %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}
+    </dl>
+    {% if task.preview.changes %}<div class="alert neutral"><strong>配置影响</strong><ul class="verification-list">{% for item in task.preview.changes %}{% if item.changed %}<li>{{ item.label }}：{{ item.current }} → {{ item.target }}</li>{% endif %}{% endfor %}</ul></div>{% endif %}
+    {% if operation == "apply" %}<div class="alert neutral">应用后请保留本窗口，从另一条新建 SSH/AWG 连接验证，再在新连接打开的管理页面确认。</div>{% endif %}
+    <div class="confirm-actions">
+      <form method="post" action="{% url 'security-transaction-execute' transaction_type %}">
+        {% csrf_token %}<input type="hidden" name="task_id" value="{{ task.id }}">
+        <button class="action-button{% if operation == 'rollback' %} danger-button{% endif %}" type="submit">{{ operation_label }}</button>
+      </form>
+      <a class="secondary-button" href="{% url 'security-transactions' %}">取消</a>
+    </div>
+  </section>
+</main>
+{% endblock %}

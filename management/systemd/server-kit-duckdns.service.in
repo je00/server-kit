@@ -1,0 +1,19 @@
+[Unit]
+Description=server-kit 动态 DNS 公网入口更新
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=@APP_DIR@/server-kit-manager.sh network duckdns update --json
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/server-kit /var/lib/server-kit /run/server-kit
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+UMask=0077

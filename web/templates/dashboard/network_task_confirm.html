@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}确认{{ task.preview.title }} · server-kit{% endblock %}
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main class="content detail-content">
+    <a class="back-link" href="{% if target_type == 'domains' or target_type == 'public-endpoint' or target_type == 'duckdns' %}{% url 'network-subscriptions' %}{% else %}{% url 'network-nodes' %}{% endif %}">← 返回{% if target_type == 'domains' or target_type == 'public-endpoint' or target_type == 'duckdns' %}域名管理{% else %}内网节点{% endif %}</a>
+    <header class="page-header"><div><p class="eyebrow">root 实时影响预览</p><h1>{{ task.preview.title }}</h1><p class="muted">{{ task.preview.summary }}</p></div><span class="stage-badge">{{ task.state_label }}</span></header>
+    <section class="inventory-panel">
+      <dl class="fact-grid">{% for label, value in task.preview.facts.items %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
+      <div class="alert">确认后进入耐久队列；执行前会再次核验事实。{% if target_type == 'public-endpoint' %}应用后进入 5 分钟回滚窗口；必须从另一条独立登录连接确认保留。超时或手动回滚会同时恢复入口事实、HTTPS 证书、普通文件地址和 Clash 订阅链接。{% elif target_type == 'exits' %}任务会刷新 Xray 中转身份和全部订阅，但不修改 AWG、SSH 或防火墙。{% elif target_type == 'duckdns' %}候选 Token 只以机器密钥加密暂存，任务结束后立即清除；不会在页面、日志或任务详情中回显。{% elif target_type == 'node' %}{% if operation == 'add' or operation == 'import' %}新增节点与订阅发布在同一个任务中完成；发布失败时撤销刚新增的节点，既有节点与订阅保持不变。{% else %}订阅影响以本页实时预览为准。{% endif %}{% else %}本任务不会自动同步发布订阅。{% endif %}</div>
+      <form class="confirm-actions" method="post" action="{% if target_type == 'node' %}{% url 'network-node-execute' %}{% elif target_type == 'domains' %}{% url 'network-node-domains-execute' %}{% elif target_type == 'exits' %}{% url 'network-node-exits-execute' %}{% elif target_type == 'public-endpoint' %}{% url 'network-public-endpoint-execute' %}{% elif target_type == 'duckdns' %}{% url 'network-duckdns-execute' %}{% else %}{% url 'network-permission-execute' %}{% endif %}">{% csrf_token %}<input type="hidden" name="task_id" value="{{ task.id }}"><a class="secondary-button" href="{% if target_type == 'domains' or target_type == 'public-endpoint' or target_type == 'duckdns' %}{% url 'network-subscriptions' %}{% else %}{% url 'network-nodes' %}{% endif %}">取消</a><button class="action-button{% if operation == 'remove' or operation == 'deny' or operation == 'clear' or operation == 'delete' %} danger-button{% endif %}" type="submit">确认提交任务</button></form>
+    </section>
+  </main>
+</div>
+{% endblock %}

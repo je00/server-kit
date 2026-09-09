@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block title %}确认网络变更 · server-kit{% endblock %}
+
+{% block body %}
+<div class="app-shell">{% include "dashboard/_navigation.html" %}<main class="content confirm-content">
+  <a class="back-link" href="{% url 'network-nodes' %}">← 取消并返回内网节点</a>
+  <section class="confirm-card"><span class="stage-badge">二次确认</span><p class="eyebrow">网络变更</p><h1>确认{{ operation_label }}</h1>
+    {% if target_type == 'node' %}<p class="muted">节点变更会立即作用于 AWG 或 Xray；新增节点会在同一任务中自动发布订阅。操作结果会写入审计链。</p><dl class="impact-list"><div><dt>节点</dt><dd>{{ name }}</dd></div><div><dt>类型</dt><dd>{{ kind_label }}</dd></div><div><dt>操作</dt><dd>{{ operation_label }}</dd></div>{% if address %}<div><dt>虚拟 IP</dt><dd>{{ address }}</dd></div>{% endif %}</dl>
+    <form class="confirm-actions" method="post" action="{% url 'network-node-execute' %}">{% csrf_token %}<input type="hidden" name="confirmation" value="{{ confirmation }}"><a class="secondary-button" href="{% url 'network-nodes' %}">取消</a><button class="action-button{% if operation == 'remove' %} danger-button{% endif %}" type="submit">确认执行</button></form>
+    {% elif target_type == 'permission' %}<p class="muted">权限会写入候选策略、验证 Xray 配置并重启服务；任一步失败都会保留原生效配置。</p><dl class="impact-list"><div><dt>VLESS 节点</dt><dd>{{ client_name }}</dd></div><div><dt>目标</dt><dd>{{ target }}</dd></div><div><dt>操作</dt><dd>{{ operation_label }}</dd></div>{% if ports %}<div><dt>范围</dt><dd>{{ network }} {{ ports }}</dd></div>{% endif %}</dl><form class="confirm-actions" method="post" action="{% url 'network-permission-execute' %}">{% csrf_token %}<input type="hidden" name="confirmation" value="{{ confirmation }}"><a class="secondary-button" href="{% url 'network-nodes' %}">取消</a><button class="action-button{% if operation == 'deny' %} danger-button{% endif %}" type="submit">确认执行</button></form>
+    {% elif target_type == 'subscription_rotate' %}<p class="muted">只会更换 {{ name }} 的访问令牌；该节点的旧链接会立即失效，其他订阅不受影响。服务重启失败会自动恢复旧令牌。</p><form class="confirm-actions" method="post" action="{% url 'network-subscription-rotate-execute' name %}">{% csrf_token %}<input type="hidden" name="confirmation" value="{{ confirmation }}"><a class="secondary-button" href="{% url 'network-nodes' %}">取消</a><button class="action-button danger-button" type="submit">确认轮换</button></form>
+    {% elif target_type == 'subscription_state' %}<p class="muted">{% if state == 'disabled' %}只撤下 {{ name }} 的订阅文件和链接，不会禁用该内网节点；再次恢复发布时会生成新令牌。{% else %}将重新生成 {{ name }} 的订阅并分配新令牌，节点本身不变。{% endif %} 失败会自动恢复原发布状态。</p><form class="confirm-actions" method="post" action="{% url 'network-subscription-state-execute' name %}">{% csrf_token %}<input type="hidden" name="confirmation" value="{{ confirmation }}"><a class="secondary-button" href="{% url 'network-nodes' %}">取消</a><button class="action-button{% if state == 'disabled' %} danger-button{% endif %}" type="submit">确认{{ operation_label }}</button></form>
+    {% else %}<p class="muted">将按当前启用节点重新生成全部订阅。仍存在节点的链接令牌保持不变；生成或重启失败会自动恢复原订阅。</p><form class="confirm-actions" method="post" action="{% url 'network-subscription-execute' %}">{% csrf_token %}<input type="hidden" name="confirmation" value="{{ confirmation }}"><a class="secondary-button" href="{% url 'network-nodes' %}">取消</a><button class="action-button" type="submit">确认同步</button></form>{% endif %}
+  </section>
+</main></div>
+{% endblock %}

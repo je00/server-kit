@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block title %}安全事务 · server-kit{% endblock %}
+
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main class="content detail-content">
+    <header class="page-header detail-header">
+      <div><p class="eyebrow">高风险变更</p><h1>安全事务</h1><p class="muted">所有变更先预览；应用后 5 分钟自动回滚。最终确认必须从另一条独立登录连接完成，原发起会话会被拒绝。</p></div>
+      <span class="stage-badge">事务保护</span>
+    </header>
+    {% include "dashboard/_messages.html" %}
+    {% if snapshot_error %}<div class="alert danger">{{ snapshot_error }}</div>{% endif %}
+    <section class="transaction-grid">
+      {% for transaction in transactions %}
+      <article class="transaction-card{% if transaction.state == 'pending' %} pending{% endif %}">
+        <div class="card-title"><div><p class="eyebrow">{{ transaction.transaction_type }}</p><h2>{{ transaction.title }}</h2></div><span class="status-pill">{% if transaction.state == 'pending' %}等待确认{% else %}空闲{% endif %}</span></div>
+        {% if transaction.state == "pending" %}
+          <div class="countdown" data-countdown="{{ transaction.remaining_seconds }}"><strong data-countdown-value>{{ transaction.remaining_seconds }}</strong><span>秒后自动回滚</span></div>
+          <ul class="verification-list">{% for item in transaction.verifications %}<li>{{ item }}</li>{% endfor %}</ul>
+          {% if request.user.is_superuser %}<div class="action-row">
+            {% if transaction.writes_enabled %}
+            <form method="post" action="{% url 'security-transaction-preview' transaction.transaction_type %}">{% csrf_token %}<input type="hidden" name="operation" value="confirm"><button class="action-button" type="submit">确认持久化</button></form>
+            {% endif %}
+            <form method="post" action="{% url 'security-transaction-preview' transaction.transaction_type %}">{% csrf_token %}<input type="hidden" name="operation" value="rollback"><button class="action-button danger-button" type="submit">立即回滚</button></form>
+          </div>{% endif %}
+        {% else %}
+          <p class="muted">生成候选配置只读取事实状态，不会改变连接。</p>
+          {% if request.user.is_superuser %}<form method="post" action="{% url 'security-transaction-preview' transaction.transaction_type %}" class="stack-form">{% csrf_token %}<input type="hidden" name="operation" value="preview">{% if transaction.transaction_type == 'ssh_listener' %}<label>检测到的公网 IPv4<input type="text" value="{% if detected_public_ipv4 %}{{ detected_public_ipv4 }}{% else %}提交时自动检测{% endif %}" readonly aria-describedby="ssh-public-ip-help"></label><p id="ssh-public-ip-help" class="field-hint">由管理代理读取本机默认路由 IPv4；实际 SSH 监听地址为 0.0.0.0。{% if public_ipv4_diagnostic %}{{ public_ipv4_diagnostic }}{% endif %}</p><label>公网 SSH 高位端口<input name="public_port" type="number" min="1024" max="65535" value="{{ suggested_public_port }}" required></label>{% endif %}<button class="secondary-button" type="submit">生成变更预览</button></form>{% endif %}
+        {% endif %}
+        {% if not transaction.writes_enabled %}<p class="preview-only">当前服务器只开放预览；高风险写操作等待集成验证。</p>{% endif %}
+      </article>
+      {% empty %}<article class="empty-state">尚未读取到安全事务。</article>{% endfor %}
+    </section>
+  </main>
+</div>
+{% endblock %}

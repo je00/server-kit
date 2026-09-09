@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}内网节点 · server-kit{% endblock %}
+{% block extra_head %}
+<script src="{% static 'awg.js' %}" defer></script>
+<script src="{% static 'qrcode.js' %}" defer></script>
+{% endblock %}
+
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main class="content detail-content">
+    <header class="page-header">
+      <div><p class="eyebrow">网络身份</p><h1>内网节点</h1><p class="muted">新增功能按需展开；现有节点保持一行，点击右侧“配置”再管理详细设置。</p></div>
+      <div class="header-actions"><a class="secondary-button compact-button" href="{% url 'service-detail' 'amneziawg' %}#managed-ports">维护 AWG 备用入口</a><span class="stage-badge">{{ network.nodes|length }} 个节点</span></div>
+    </header>
+    {% include "dashboard/_messages.html" %}
+    {% if snapshot_error %}<div class="alert danger">{{ snapshot_error }}</div>{% endif %}
+    {% if network.pending_vless %}<div class="alert danger">检测到命令行留下的 VLESS 待应用策略。处理完成前，网页不会修改 VLESS 节点。</div>{% endif %}
+    {% if network.pending_access %}<div class="alert danger">检测到命令行留下的 AWG 访问待应用策略。处理完成前，网页不会修改普通节点权限。</div>{% endif %}
+    {% if not network.subscriptions_configured %}<div class="alert neutral">尚未安装 Clash 订阅服务；节点仍可管理，但不会生成订阅链接。</div>{% endif %}
+    {% if network.summary.stale %}<div class="alert neutral"><span>检测到 {{ network.summary.stale }} 处历史发布差异。新增节点今后会自动发布，无需再单独同步。</span>{% if network.sync_available %}{% if request.user.is_superuser or request.user.is_staff %}<form class="inline-form" method="post" action="{% url 'network-subscription-preview' %}">{% csrf_token %}<button class="copy-button" type="submit">修复发布差异</button></form>{% endif %}{% endif %}</div>{% endif %}
+    {% for event in network.enrollment_history %}{% if event.state == '已超时' %}<div class="alert neutral dismissible-alert"><span>节点 {{ event.name }} 首次握手已超时，服务端记录和临时授权已自动清理。</span><form method="post" action="{% url 'network-notice-dismiss' %}">{% csrf_token %}<input type="hidden" name="notice_id" value="{{ event.notice_id }}"><button class="notice-dismiss" type="submit" aria-label="关闭提示">×</button></form></div>{% endif %}{% endfor %}
+
+    {% if network.writes_enabled and request.user.is_superuser or network.writes_enabled and request.user.is_staff %}
+    <details id="node-create" class="node-create-panel" data-node-create-panel>
+      <summary><span><strong>新增节点</strong><small>按需创建普通双向节点或 VLESS 单向节点</small></span><span aria-hidden="true">＋</span></summary>
+      <div class="node-create-grid">
+        <article class="action-panel recommended-panel" data-awg-generator>
+          <p class="eyebrow">推荐 · 网页内置</p><h2>新增普通节点</h2>
+          <p class="muted">填写名称即可。密钥和主/备两个入口配置在当前浏览器生成，VPS只登记公钥和预共享密钥。</p>
+          <textarea data-awg-generator-context hidden>{{ generator_context_json }}</textarea>
+          <form class="stack-form" data-awg-generator-form>
+            <label>节点名称<input name="generator_name" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_.-]{0,63}" placeholder="home-laptop" autocomplete="off"></label>
+            <label>虚拟 IP（可留空自动分配）<input name="generator_address" inputmode="decimal" placeholder="{{ generator_suggested_address|default:'自动分配' }}" autocomplete="off"></label>
+            <button class="action-button" type="submit">生成客户端配置</button>
+          </form>
+          <section class="generated-node-bundle" data-awg-generator-result hidden>
+            <div class="alert success"><strong>配置已在当前浏览器生成</strong><span>请先下载或扫码导入，再登记节点。</span></div>
+            <div class="client-profile-list" data-awg-profile-list></div>
+            <form class="stack-form generated-enrollment-form" method="post" action="{% url 'network-node-preview' %}" data-awg-enrollment-form>
+              {% csrf_token %}<input type="hidden" name="kind" value="awg"><input type="hidden" name="operation" value="import"><input type="hidden" name="enrollment_token" data-awg-enrollment-token>
+              <button class="action-button" type="submit" data-awg-download-and-submit>下载主配置并预览登记</button>
+            </form>
+            <button class="secondary-button compact-button" type="button" data-awg-generator-reset>重新生成</button>
+            <p class="privacy-note" data-awg-generator-status>临时配置只保存在当前标签页，关闭后清除。</p>
+          </section>
+        </article>
+        <article class="action-panel">
+          <p class="eyebrow">受限单向节点</p><h2>新增 VLESS 节点</h2>
+          <form class="stack-form" method="post" action="{% url 'network-node-preview' %}">
+            {% csrf_token %}<input type="hidden" name="kind" value="vless"><input type="hidden" name="operation" value="add">
+            <label>节点名称<input name="name" required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_.-]{0,63}" placeholder="iphone"></label>
+            <p class="privacy-note">新节点默认没有内网访问授权，避免订阅泄露后横向访问。</p>
+            <button class="action-button" type="submit">预览新增</button>
+          </form>
+        </article>
+      </div>
+    </details>
+    {% elif request.user.is_superuser or request.user.is_staff %}<div class="alert neutral">节点写操作当前未启用；请检查管理代理的网络写入开关。</div>{% endif %}
+
+    <section class="inventory-panel node-inventory">
+      <div class="section-heading"><div><p class="eyebrow">当前生效</p><h2>现有节点</h2></div></div>
+      <div class="inventory-list network-list">
+        {% for node in network.nodes %}
+        <details class="network-node-card node-config-panel">
+          <summary class="node-card-summary">
+            <span class="node-main"><span class="node-heading"><strong>{{ node.name }}</strong><span class="node-kind">{{ node.kind_label }}</span>{% if node.protected %}<span class="protected-badge">管理入口</span>{% endif %}</span><small>{{ node.detail }} · {{ node.publication_state }}</small></span>
+            <span class="node-row-tools"><span class="item-state">{{ node.state }}</span><span class="copy-button node-config-trigger">配置</span></span>
+          </summary>
+          <div class="node-config-body">
+            <section class="node-setting-group node-preference-group">
+              <div class="node-setting-heading"><div><h3>节点设置</h3><small>常用操作和订阅选项集中在这里。</small></div></div>
+              {% if request.user.is_superuser or request.user.is_staff %}
+              {% if network.writes_enabled %}
+              <div class="node-actions-inline">
+                {% if node.kind == 'awg' and node.custody == 'client' and not node.protected and node.state == '已启用' %}
+                <form method="post" action="{% url 'network-node-preview' %}">{% csrf_token %}<input type="hidden" name="kind" value="awg"><input type="hidden" name="name" value="{{ node.name }}"><input type="hidden" name="operation" value="set-management"><button class="copy-button" type="submit">设为管理入口</button></form>
+                {% endif %}
+                {% if not node.protected and node.state != '等待首次握手' %}
+                <form method="post" action="{% url 'network-node-preview' %}">{% csrf_token %}<input type="hidden" name="kind" value="{{ node.kind }}"><input type="hidden" name="name" value="{{ node.name }}"><input type="hidden" name="operation" value="{% if node.state == '已启用' %}disable{% else %}enable{% endif %}"><button class="copy-button" type="submit">{% if node.state == '已启用' %}禁用节点{% else %}启用节点{% endif %}</button></form>
+                <form method="post" action="{% url 'network-node-preview' %}">{% csrf_token %}<input type="hidden" name="kind" value="{{ node.kind }}"><input type="hidden" name="name" value="{{ node.name }}"><input type="hidden" name="operation" value="remove"><button class="copy-button danger-quiet" type="submit">删除节点</button></form>
+                {% endif %}
+              </div>
+              {% endif %}
+              {% if node.state == '等待首次握手' %}
+              <p class="privacy-note">节点正在等待首次握手；5 分钟内未连接会自动撤销。</p>
+              {% elif node.protected %}<p class="privacy-note">这是当前管理入口，不提供停用或删除操作。</p>{% endif %}
+              {% endif %}
+              {% if node.kind == 'vless' %}
+              <div class="node-domain-settings node-mode-settings">
+                <div><strong>订阅兼容模式</strong><small>{% if node.legacy_stash %}已启用旧版 Stash 语法；会移除旧客户端无法解析的现代数组字段。{% else %}当前使用现代 Mihomo / Stash 语法。{% endif %}</small></div>
+                {% if network.writes_enabled %}{% if request.user.is_superuser or request.user.is_staff %}<form class="node-mode-action" method="post" action="{% url 'network-node-preview' %}">{% csrf_token %}<input type="hidden" name="kind" value="vless"><input type="hidden" name="name" value="{{ node.name }}"><input type="hidden" name="operation" value="{% if node.legacy_stash %}compat-disable{% else %}compat-enable{% endif %}"><button class="copy-button" type="submit">{% if node.legacy_stash %}恢复现代语法{% else %}启用旧版兼容{% endif %}</button></form>{% endif %}{% endif %}
+                <p class="privacy-note">提交后自动刷新订阅；不重启 Xray，也不改变权限或内网通道。</p>
+              </div>
+              {% endif %}
+              <div class="node-domain-settings node-mode-settings">
+                <div><strong>订阅纯净模式</strong><small>{% if node.clean_mode %}已启用；订阅不包含机场资源，PROXY 也不显示 MID 或其链式出口。{% else %}当前包含已启用的机场分组，并允许在 PROXY 中选择 MID。{% endif %}</small></div>
+                {% if network.writes_enabled %}{% if request.user.is_superuser or request.user.is_staff %}<form class="node-mode-action" method="post" action="{% url 'network-node-preview' %}">{% csrf_token %}<input type="hidden" name="kind" value="{{ node.kind }}"><input type="hidden" name="name" value="{{ node.name }}"><input type="hidden" name="operation" value="{% if node.clean_mode %}clean-disable{% else %}clean-enable{% endif %}"><button class="copy-button" type="submit">{% if node.clean_mode %}关闭纯净模式{% else %}启用纯净模式{% endif %}</button></form>{% endif %}{% endif %}
+                <p class="privacy-note">提交后只刷新订阅，不重启 AWG、Xray，也不改变节点权限或内网通道。</p>
+              </div>
+              <div class="node-domain-settings node-mode-settings node-publication-settings">
+                <div><strong>订阅链接</strong><small>{{ node.publication_state }}{% if node.published %} · 独立令牌{% endif %}</small></div>
+                {% if request.user.is_superuser or request.user.is_staff %}<div class="item-actions">
+                  {% if request.user.is_superuser and node.published %}<form>{% csrf_token %}<button class="copy-button" type="button" data-secret-action="copy" data-secret-label="复制订阅链接" data-endpoint="{% url 'clash-subscription-copy' node.name %}">复制链接</button></form><form>{% csrf_token %}<button class="copy-button qr-button" type="button" data-secret-action="qr" data-secret-label="显示订阅二维码" data-endpoint="{% url 'clash-subscription-qr' node.name %}">显示二维码</button></form>{% endif %}
+                  {% if network.writes_enabled %}{% if node.published %}<form method="post" action="{% url 'network-subscription-rotate-preview' node.name %}">{% csrf_token %}<button class="copy-button danger-quiet" type="submit">轮换令牌</button></form>{% endif %}{% if node.published or node.publication_state == '发布已停用' %}<form method="post" action="{% url 'network-subscription-state-preview' node.name %}">{% csrf_token %}<input type="hidden" name="state" value="{% if node.published %}disabled{% else %}enabled{% endif %}"><button class="copy-button{% if node.published %} danger-quiet{% endif %}" type="submit">{% if node.published %}停用发布{% else %}恢复发布{% endif %}</button></form>{% endif %}{% endif %}
+                </div>{% endif %}
+                <p class="privacy-note">新增节点会在同一任务中自动生成订阅；只有检测到历史差异时才需要使用页面顶部的修复操作。</p>
+              </div>
+            </section>
+
+            {% if node.kind == 'awg' or node.kind == 'vless' %}
+            <details class="node-config-card node-exit-card">
+              <summary class="node-config-card-summary"><span class="node-config-card-title"><strong>可选中转出口</strong><small>{% if node.exit_names %}已增加：{{ node.exit_names|join:"、" }}{% else %}VPS MID（默认）{% endif %}</small></span><span class="node-config-card-meta"><span>{% if node.exit_ids %}{{ node.exit_ids|length }} 个额外出口{% else %}无需配置{% endif %}</span><span class="node-config-card-chevron" aria-hidden="true">⌄</span></span></summary>
+              <div class="node-config-card-body node-exit-settings">
+                <div class="exit-default-path"><strong>默认使用 VPS MID</strong><span>不选择代理出口也能正常订阅和使用；流量直接从 VPS 出口。</span></div>
+                <p class="config-card-intro">如需其他公网出口，可在下方额外勾选。每个选中项会发布对应的 MID 链和独立 VLESS 中转节点。</p>
+                {% if network.writes_enabled %}{% if request.user.is_superuser or request.user.is_staff %}
+                <form class="node-exit-form" method="post" action="{% url 'network-node-exits-preview' %}">
+                  {% csrf_token %}<input type="hidden" name="name" value="{{ node.name }}">
+                  <fieldset class="country-picker node-exit-picker">
+                    <legend>额外代理出口（可不选）</legend>
+                    <div>{% for exit in network.exit_options %}<label><input type="checkbox" name="exit_ids" value="{{ exit.id }}"{% if exit.id in node.exit_ids %} checked{% endif %}><span>{{ exit.name }}{% if exit.default %} · 默认{% endif %}</span></label>{% endfor %}</div>
+                  </fieldset>
+                  <button class="copy-button" type="submit">保存中转设置</button>
+                </form>
+                {% endif %}{% endif %}
+                <p class="privacy-note">清空所有勾选并保存即可恢复 VPS MID；删除代理资源时会自动清理节点引用。</p>
+              </div>
+            </details>
+            {% endif %}
+
+            <details class="node-config-card node-permission-card">
+              <summary class="node-config-card-summary"><span class="node-config-card-title"><strong>访问权限</strong><small>按目标、协议和端口逐条管理</small></span><span class="node-config-card-meta"><span>{{ node.permissions|length }} 条规则</span><span class="node-config-card-chevron" aria-hidden="true">⌄</span></span></summary>
+              <div class="node-config-card-body node-permission-settings">
+                <p class="config-card-intro">规则按条追加；删除时只移除选中的目标、协议和端口。</p>
+                {% if node.protected and node.access_mode == 'unrestricted' %}<div class="permission-safety-note"><strong>管理入口保护</strong><span>删除“全部节点 / 全部端口”前，请先新增 VPS TCP 22、{{ network.management_port }}，防止失去 SSH 与网页管理连接。</span></div>{% endif %}
+                <div class="permission-list">
+                {% for permission in node.permissions %}<div class="permission-row{% if forloop.first %} first-permission-row{% endif %}"><span class="permission-target"><strong>{{ permission.target_label }}</strong>{% if permission.ip %}<small>{{ permission.ip }}</small>{% endif %}</span><span class="permission-scope"><strong>{{ permission.network_label }}</strong><small>{{ permission.ports_label }}</small></span>{% if network.writes_enabled %}{% if request.user.is_superuser or request.user.is_staff %}<form method="post" action="{% url 'network-permission-preview' %}">{% csrf_token %}<input type="hidden" name="operation" value="deny"><input type="hidden" name="client" value="{{ node.name }}"><input type="hidden" name="target" value="{{ permission.target }}"><input type="hidden" name="network" value="{{ permission.network }}"><input type="hidden" name="ports" value="{{ permission.ports|join:',' }}"><button class="copy-button danger-quiet" type="submit">删除</button></form>{% endif %}{% endif %}</div>{% empty %}<div class="permission-empty"><strong>尚未开放内网访问</strong><span>需要时可在下方按目标和端口新增规则。</span></div>{% endfor %}
+                </div>
+                {% if network.writes_enabled and node.state == '已启用' %}{% if request.user.is_superuser or request.user.is_staff %}<details class="permission-add-panel"><summary><span><strong>新增访问权限</strong><small>选择目标和开放范围</small></span><span aria-hidden="true">＋</span></summary><form class="permission-form" data-permission-form method="post" action="{% url 'network-permission-preview' %}">{% csrf_token %}<input type="hidden" name="operation" value="allow"><input type="hidden" name="client" value="{{ node.name }}"><label>访问目标<select name="target" required>{% for target in node.available_targets %}<option value="{{ target.name }}">{{ target.label }}</option>{% endfor %}</select></label><label>开放范围<select name="port_mode" required><option value="all">全部协议与端口</option><option value="tcp">指定 TCP 端口</option><option value="udp">指定 UDP 端口</option></select></label><label data-permission-ports hidden>端口<input name="ports" inputmode="numeric" placeholder="例如 22,443" disabled></label><button class="secondary-button" type="submit">添加权限</button></form></details>{% endif %}{% endif %}
+              </div>
+            </details>
+          </div>
+        </details>
+        {% empty %}<article class="empty-state compact-empty"><strong>还没有节点</strong><p>展开上方“新增节点”开始创建。</p></article>{% endfor %}
+      </div>
+      <p class="privacy-note">这里只显示名称、类型、虚拟 IP 和状态；私钥、UUID 与访问令牌只在明确领取时短暂返回。</p>
+    </section>
+  </main>
+</div>
+<div class="qr-modal" data-qr-modal hidden><button class="qr-backdrop" type="button" data-qr-close aria-label="关闭二维码"></button><section class="qr-dialog" role="dialog" aria-modal="true" aria-labelledby="qr-title"><button class="qr-close" type="button" data-qr-close aria-label="关闭">×</button><p class="eyebrow">客户端配置</p><h2 id="qr-title" data-qr-title>配置二维码</h2><div class="qr-frame"><img class="qr-image" data-qr-image alt=""></div><p class="qr-note">请使用对应客户端扫描导入。关闭后二维码立即从页面移除。</p></section></div>
+{% if request.user.is_superuser %}<div class="qr-modal sensitive-auth-modal" data-sensitive-auth-modal hidden><button class="qr-backdrop" type="button" data-sensitive-auth-close aria-label="取消验证"></button><section class="qr-dialog" role="dialog" aria-modal="true" aria-labelledby="node-sensitive-auth-title"><button class="qr-close" type="button" data-sensitive-auth-close aria-label="关闭">×</button><p class="eyebrow">敏感操作确认</p><h2 id="node-sensitive-auth-title">验证身份后获取订阅</h2><p class="muted" data-sensitive-auth-context>仅在复制链接或显示二维码时验证。验证通过后 5 分钟内不再重复询问。</p><form class="stack-form sensitive-auth-form" method="post" action="{% url 'sensitive-unlock' %}" data-sensitive-auth-form>{% csrf_token %}<input type="hidden" name="destination" value="nodes"><label>当前账号密码<input type="password" name="password" required autocomplete="current-password" data-sensitive-auth-password></label><p class="form-error" data-sensitive-auth-error hidden></p><button class="action-button" type="submit">验证并继续</button></form></section></div>{% endif %}
+{% endblock %}

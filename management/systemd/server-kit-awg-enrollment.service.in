@@ -1,0 +1,18 @@
+[Unit]
+Description=server-kit AWG 首次握手确认
+After=network-online.target awg-quick@@AWG_IFACE@.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+RuntimeDirectory=server-kit
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ExecStart=@APP_DIR@/server-kit-manager.sh network enrollment reconcile --json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/amneziawg /etc/server-kit /var/lib/server-kit-agent /run/server-kit

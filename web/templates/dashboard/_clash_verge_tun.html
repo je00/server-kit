@@ -1,0 +1,10 @@
+<div class="guide-must-do">
+  <strong>首页 → 网络设置 → 虚拟网卡模式 ⚙</strong>
+  <ul>
+    <li>堆栈选 <code>Mixed</code>。</li>
+    <li>“全局路由、严格路由、自动选择出口”全部开启。</li>
+    <li>DNS 劫持填 <code>any:53</code>，MTU 填 <code>1500</code>。</li>
+    <li>排除：<code>192.168.0.0/16</code>、<code>172.16.0.0/12</code>、<code>VPS 公网 IP/32</code>。</li>
+  </ul>
+  <p>不要排除 <code>10.20.0.0/24</code>，然后保存并开启虚拟网卡模式。</p>
+</div>

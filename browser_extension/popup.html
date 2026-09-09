@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>server-kit 本地密钥生成器</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <p class="eyebrow">server-kit</p>
+    <h1>本地密钥生成器</h1>
+    <p class="muted">完全离线运行。AWG 私钥只用于本页生成配置，不会上传 VPS，也不会持久保存在浏览器中。</p>
+
+    <section id="generator-section">
+      <form id="generator-form">
+        <label>服务器公开参数<textarea id="server-context" rows="7" placeholder="从管理网站复制服务器公开参数并粘贴到这里" required></textarea></label>
+        <div class="field-grid">
+          <label>节点名称<input id="node-name" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_.-]{0,63}" placeholder="home-laptop" required></label>
+          <label>虚拟 IP<input id="node-address" inputmode="decimal" placeholder="自动使用建议地址"></label>
+        </div>
+        <button type="submit">本地生成密钥与配置</button>
+      </form>
+    </section>
+
+    <section id="profiles" hidden>
+      <div class="success-card"><strong>本地生成完成</strong><span>先复制登记信息到管理网站，再下载或扫码导入配置。</span></div>
+      <div class="enrollment-panel">
+        <span>节点登记信息（不含私钥）</span>
+        <textarea id="enrollment-token" rows="4" readonly></textarea>
+        <button id="copy-enrollment-token" class="secondary" type="button">复制登记信息</button>
+      </div>
+      <div id="profile-list"></div>
+      <label>恢复包口令（可选）<input id="recovery-password" type="password" minlength="10" autocomplete="new-password" placeholder="至少 10 个字符"></label>
+      <button id="download-recovery" class="secondary" type="button">下载加密恢复包</button>
+      <button id="clear-pending" class="secondary danger" type="button">完成并清除临时配置</button>
+      <p id="pending-retention" class="warning">配置最长保留 5 分钟，仅存于浏览器会话内存。</p>
+    </section>
+
+    <section id="endpoint-migration-section" class="migration-panel">
+      <h2>迁移旧 AWG 配置入口</h2>
+      <p class="muted">逐份粘贴旧配置，只在本地替换唯一的 Endpoint 主机；私钥和配置不会保存或上传。</p>
+      <form id="endpoint-migration-form">
+        <label>稳定入口 FQDN<input id="migration-fqdn" placeholder="vpn.example.com" required></label>
+        <label>单份旧配置<textarea id="migration-config" rows="8" placeholder="粘贴 main、backup1 或 backup2 中的一份配置" required></textarea></label>
+        <button type="submit">本地替换 Endpoint 主机</button>
+      </form>
+      <div id="migration-result" hidden>
+        <label>迁移后配置<textarea id="migrated-config" rows="8" readonly></textarea></label>
+        <div class="button-row">
+          <button id="copy-migrated-config" class="secondary" type="button">复制迁移后配置</button>
+          <button id="download-migrated-config" class="secondary" type="button">下载迁移后配置</button>
+          <button id="clear-migrated-config" class="secondary danger" type="button">清除</button>
+        </div>
+      </div>
+    </section>
+    <p id="result" role="status" hidden></p>
+  </main>
+  <div id="qr-dialog" class="qr-dialog" hidden>
+    <button id="qr-close" class="qr-close" type="button" aria-label="关闭">×</button>
+    <strong id="qr-title">配置二维码</strong>
+    <img id="qr-image" alt="本地生成的 AWG 配置二维码">
+    <span>二维码只在本地生成，关闭后立即清除。</span>
+  </div>
+  <script src="session_store.js"></script>
+  <script src="awg.js"></script>
+  <script src="vendor/qrcode.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

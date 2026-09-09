@@ -1,0 +1,271 @@
+{% extends "base.html" %}
+
+{% block title %}{{ service.label|default:"服务详情" }} · server-kit{% endblock %}
+
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main class="content detail-content">
+    <a class="back-link" href="{% url 'dashboard' %}">← 返回服务总览</a>
+    {% include "dashboard/_messages.html" %}
+    {% if snapshot_error %}
+      <div class="alert danger">{{ snapshot_error }}</div>
+    {% else %}
+    <header class="page-header detail-header">
+      <div>
+        <p class="eyebrow">托管服务 · {{ service.id }}</p>
+        <h1>{{ service.label }}</h1>
+        <p class="muted">{{ service.detail }}</p>
+      </div>
+      <span class="status-pill state-pill state-{{ service.state }}">{{ service.state }}</span>
+    </header>
+
+    <section class="detail-grid">
+      <article class="detail-panel">
+        <p class="eyebrow">运行方式</p>
+        <h2>{{ service.autostart }}</h2>
+        <p class="muted">页面每次都从服务器事实配置读取，不保存配置副本。</p>
+      </article>
+      <article class="detail-panel">
+        <p class="eyebrow">网络入口</p>
+        {% for port in service.ports %}
+          <div class="port-row"><strong>{{ port.protocol|upper }} {{ port.port }}</strong><span>{{ port.scope }} · {{ port.state }}</span></div>
+        {% empty %}
+          <p class="muted">此服务不独占监听端口。</p>
+        {% endfor %}
+      </article>
+    </section>
+
+    {% if managed_ports %}
+    <section id="managed-ports" class="inventory-panel managed-port-panel">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">端口维护</p>
+          <h2>{% if service.id == "amneziawg" %}公网入口{% else %}下载入口{% endif %}</h2>
+          <p class="muted">修改前检查冲突，确认后同步服务配置、端口清单和防火墙；失败自动恢复。</p>
+        </div>
+      </div>
+      {% if managed_ports_error %}<div class="alert danger">{{ managed_ports_error }}</div>{% endif %}
+      <div class="inventory-list managed-port-list">
+        {% for item in managed_ports.items %}
+        <article>
+          <div>
+            <strong>{{ item.label }}</strong>
+            <p>{{ item.protocol|upper }} {{ item.port }} · 公网{% if not item.restart_required %} · 不重启主隧道{% endif %}</p>
+          </div>
+          {% if request.user.is_superuser %}
+          <form class="managed-port-form" method="post" action="{% url 'managed-port-preview' %}">
+            {% csrf_token %}
+            <input type="hidden" name="target_id" value="{{ item.id }}">
+            <input type="hidden" name="service_id" value="{{ service.id }}">
+            <label><span class="sr-only">新端口</span><input type="number" name="port" value="{{ item.port }}" min="{{ item.minimum }}" max="{{ item.maximum }}" inputmode="numeric" required></label>
+            <button class="secondary-button compact-button" type="submit">预览修改</button>
+          </form>
+          {% endif %}
+        </article>
+        {% empty %}<p class="empty-state">当前服务尚未安装，没有可维护端口。</p>{% endfor %}
+      </div>
+      {% if service.id == "amneziawg" %}<p class="privacy-note">主入口保持只读，避免误操作切断全部节点；备用端口必须在 1–9999 且互不重复。</p>{% else %}<p class="privacy-note">端口变化后，旧链接不会自动跳转；请重新复制或扫码获取链接。</p>{% endif %}
+    </section>
+    {% endif %}
+
+    {% if service.id == "firewall" %}
+    <section class="inventory-panel firewall-port-panel">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">自定义放行</p>
+          <h2>开放临时或永久端口</h2>
+          <p class="muted">公网会允许所有来源访问；内网仅允许 AmneziaWG 节点访问。</p>
+        </div>
+      </div>
+      {% if firewall_ports_error %}<div class="alert danger">{{ firewall_ports_error }}</div>{% endif %}
+      {% if not firewall_ports.firewall_active %}
+        <div class="alert neutral">防火墙当前未运行，已登记规则会保留，但暂不生效。</div>
+      {% endif %}
+      {% if request.user.is_superuser %}
+      <form class="firewall-port-form" method="post" action="{% url 'firewall-port-preview' %}">
+        {% csrf_token %}
+        <input type="hidden" name="operation" value="open">
+        <label><span>端口</span><input type="number" name="port" min="1" max="65535" inputmode="numeric" placeholder="例如 5201" required></label>
+        <label><span>访问范围</span><select name="scope" required>{% for value, label in firewall_port_scopes.items %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
+        <label><span>协议</span><select name="protocol" required>{% for value, label in firewall_port_protocols.items %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
+        <label><span>开放时长</span><select name="duration" required>{% for value, label in firewall_port_durations.items %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
+        <button class="action-button" type="submit">查看影响</button>
+      </form>
+      {% else %}
+        <div class="alert neutral">只有超级管理员可以变更自定义端口。</div>
+      {% endif %}
+
+      <div class="inventory-list firewall-port-list">
+        {% for item in firewall_ports.items %}
+        <article>
+          <div>
+            <strong>{{ item.protocol|upper }} {{ item.port }}</strong>
+            <p>{{ item.scope_label }} · {{ item.duration_label }}</p>
+          </div>
+          <div class="item-tools">
+            <span class="item-state">{% if item.active %}生效中{% else %}已登记{% endif %}</span>
+            {% if request.user.is_superuser %}
+            <div class="item-actions">
+              <form method="post" action="{% url 'firewall-port-preview' %}">
+                {% csrf_token %}
+                <input type="hidden" name="operation" value="close">
+                <input type="hidden" name="port" value="{{ item.port }}">
+                <input type="hidden" name="scope" value="{{ item.scope }}">
+                <input type="hidden" name="protocol" value="{{ item.protocol }}">
+                <input type="hidden" name="duration" value="permanent">
+                <button class="danger-button compact-button" type="submit">关闭端口</button>
+              </form>
+            </div>
+            {% endif %}
+          </div>
+        </article>
+        {% empty %}
+        <p class="empty-state">还没有自定义放行端口。</p>
+        {% endfor %}
+      </div>
+      <p class="privacy-note">永久规则会在防火墙或服务器重启后自动恢复；限时规则到期自动关闭，也可提前关闭。</p>
+    </section>
+    {% endif %}
+
+    {% if service.id == "ssh" %}
+    <section class="inventory-panel ssh-key-panel">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">SSH 客户端</p>
+          <h2>公钥登录列表</h2>
+          <p class="muted">这里只显示名称、类型和指纹，不显示完整公钥。</p>
+        </div>
+      </div>
+      {% if ssh_keys_error %}<div class="alert danger">{{ ssh_keys_error }}</div>{% endif %}
+      {% if request.user.is_superuser %}
+      <form class="ssh-key-add-form" method="post" action="{% url 'ssh-key-preview' %}">
+        {% csrf_token %}
+        <input type="hidden" name="operation" value="add">
+        <label><span>客户端名称</span><input name="name" maxlength="64" placeholder="例如 家庭台式机" required></label>
+        <label class="ssh-key-value"><span>OpenSSH 公钥</span><textarea name="public_key" rows="3" maxlength="16384" placeholder="ssh-ed25519 AAAA…" spellcheck="false" required></textarea></label>
+        <button class="action-button" type="submit">校验并添加</button>
+      </form>
+      {% else %}
+        <div class="alert neutral">只有超级管理员可以管理 SSH 客户端。</div>
+      {% endif %}
+
+      <div class="inventory-list ssh-key-list">
+        {% for item in ssh_keys.items %}
+        <article>
+          <div class="ssh-key-identity">
+            <strong>{{ item.name }}</strong>
+            <dl class="ssh-key-meta">
+              <div><dt>公钥类型</dt><dd><code>{{ item.type }}</code></dd></div>
+              <div><dt>SHA256 指纹</dt><dd><code>{{ item.fingerprint }}</code></dd></div>
+            </dl>
+          </div>
+          <div class="item-tools">
+            <span class="item-state">可登录</span>
+            {% if request.user.is_superuser %}
+            <div class="item-actions ssh-key-actions">
+              <details>
+                <summary class="copy-button">修改名字</summary>
+                <form method="post" action="{% url 'ssh-key-preview' %}">
+                  {% csrf_token %}
+                  <input type="hidden" name="operation" value="rename">
+                  <input type="hidden" name="item_id" value="{{ item.key_id }}">
+                  <label><span>新名称</span><input name="name" value="{{ item.name }}" maxlength="64" required></label>
+                  <button class="action-button compact-button" type="submit">继续</button>
+                </form>
+              </details>
+              {% if item.deletable %}
+              <form method="post" action="{% url 'ssh-key-preview' %}">
+                {% csrf_token %}
+                <input type="hidden" name="operation" value="delete">
+                <input type="hidden" name="item_id" value="{{ item.key_id }}">
+                <button class="danger-button compact-button" type="submit">删除</button>
+              </form>
+              {% else %}
+                <span class="protected-badge">最后一把，受保护</span>
+              {% endif %}
+            </div>
+            {% endif %}
+          </div>
+        </article>
+        {% empty %}
+        <p class="empty-state">没有读取到有效的 root SSH 公钥。</p>
+        {% endfor %}
+      </div>
+      <p class="privacy-note">添加不会重载 SSH；改名只修改公钥备注；删除至少保留一把有效 root 公钥。</p>
+    </section>
+    {% endif %}
+
+    {% if description.inventory.facts or description.inventory.items %}
+    <section class="inventory-panel">
+      <div class="section-heading">
+        <div><p class="eyebrow">专用资源</p><h2>脱敏事实清单</h2></div>
+      </div>
+      {% if description.inventory.facts %}
+      <dl class="fact-grid">
+        {% for label, value in description.inventory.facts.items %}
+        <div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>
+        {% endfor %}
+      </dl>
+      {% endif %}
+      {% if description.inventory.items %}
+      <div class="inventory-list">
+        {% for item in description.inventory.items %}
+        <article>
+          <div><strong>{{ item.name }}</strong><p>{{ item.detail }}</p></div>
+          <div class="item-tools">
+            <span>{{ item.state }}</span>
+            {% if item.copy_value %}<button class="copy-button" type="button" data-copy-text="{{ item.copy_value }}">{{ item.copy_label|default:"复制链接" }}</button>{% endif %}
+            {% if service.id == "clash" and request.user.is_superuser and item.resource_id %}
+            <form class="node-tools">
+              {% csrf_token %}
+              <button class="copy-button" type="button" data-secret-action="copy" data-endpoint="{% url 'clash-subscription-copy' item.resource_id %}">复制链接</button>
+              <button class="copy-button qr-button" type="button" data-secret-action="qr" data-endpoint="{% url 'clash-subscription-qr' item.resource_id %}">显示二维码</button>
+            </form>
+            {% endif %}
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+      {% endif %}
+      <p class="privacy-note">私钥、UUID、访问令牌和完整哈希不会进入常规页面响应；Git 发布路径按运维需要明确展示。</p>
+    </section>
+    {% endif %}
+
+    <section class="action-panel">
+      <div>
+        <p class="eyebrow">服务操作</p>
+        <h2>变更前会再次确认</h2>
+      </div>
+      {% if description.restriction %}
+        <div class="alert neutral">{{ description.restriction }}</div>
+      {% elif not request.user.is_superuser and not request.user.is_staff %}
+        <div class="alert neutral">当前账号只有查看权限。</div>
+      {% else %}
+        <div class="action-row">
+        {% for operation in operations %}
+          <form method="post" action="{% url 'service-action-preview' service.id %}">
+            {% csrf_token %}
+            <input type="hidden" name="operation" value="{{ operation.id }}">
+            <button class="action-button{% if operation.id == 'stop' %} danger-button{% endif %}" type="submit">{{ operation.label }}</button>
+          </form>
+        {% endfor %}
+        </div>
+      {% endif %}
+    </section>
+    {% endif %}
+  </main>
+</div>
+{% if service.id == "clash" and request.user.is_superuser %}
+<div class="qr-modal" data-qr-modal hidden>
+  <div class="qr-backdrop" data-qr-close></div>
+  <section class="qr-dialog" role="dialog" aria-modal="true" aria-labelledby="qr-dialog-title">
+    <button class="qr-close" type="button" data-qr-close aria-label="关闭">×</button>
+    <p class="eyebrow">Clash 订阅</p>
+    <h2 id="qr-dialog-title" data-qr-title>节点二维码</h2>
+    <div class="qr-frame"><img class="qr-image" data-qr-image alt=""></div>
+    <p class="qr-note">请使用 Clash 或 Stash 扫描。二维码关闭后立即从页面移除。</p>
+  </section>
+</div>
+{% endif %}
+{% endblock %}

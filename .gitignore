@@ -1,0 +1,33 @@
+# 本地订阅和密钥材料
+shared_file.yaml
+clash-inputs.json
+.env
+*.key
+*.pem
+
+# 运行时和备份文件
+*.log
+*.bak
+*.bak.*
+__pycache__/
+*.pyc
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 可复现构建产物
+dist/
+
+# Private working notes and local runtime data
+.scratch/
+CONTEXT.md
+.env.*
+*.sqlite3
+*.sqlite3-*
+*.p12
+*.pfx
+*.key.*
+*.pem.*
+.venv/
+venv/

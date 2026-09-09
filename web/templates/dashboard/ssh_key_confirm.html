@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}确认 SSH 客户端变更 · server-kit{% endblock %}
+
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main class="content detail-content narrow-content">
+    <a class="back-link" href="{% url 'service-detail' 'ssh' %}">← 返回系统 SSH</a>
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">二次确认</p>
+        <h1>{{ change.operation_label }} SSH 客户端</h1>
+        <p class="muted">完整公钥不会显示在确认页或写入网页会话。</p>
+      </div>
+    </header>
+
+    {% if change.operation == "delete" %}
+      <div class="alert danger">删除后，持有这把私钥的设备将立即无法建立新的 SSH 连接。</div>
+    {% elif change.duplicate %}
+      <div class="alert neutral">该公钥已经存在，确认后不会重复写入。</div>
+    {% endif %}
+
+    <section class="confirmation-card">
+      <dl class="fact-grid">
+        <div><dt>动作</dt><dd>{{ change.operation_label }}</dd></div>
+        <div><dt>客户端名称</dt><dd>{{ change.name }}</dd></div>
+        <div><dt>密钥类型</dt><dd>{{ change.type }}</dd></div>
+        <div><dt>SHA256 指纹</dt><dd><code>{{ change.fingerprint }}</code></dd></div>
+      </dl>
+      <div class="confirmation-actions">
+        <a class="action-button secondary-button" href="{% url 'service-detail' 'ssh' %}">取消</a>
+        <form method="post" action="{% url 'ssh-key-execute' %}">
+          {% csrf_token %}
+          <input type="hidden" name="confirmation" value="{{ confirmation }}">
+          <button class="action-button{% if change.operation == 'delete' %} danger-button{% endif %}" type="submit">确认{{ change.operation_label }}</button>
+        </form>
+      </div>
+    </section>
+  </main>
+</div>
+{% endblock %}

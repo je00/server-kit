@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block title %}主机总览 · server-kit{% endblock %}
+
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+
+  <main class="content">
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">受管主机</p>
+        <h1>服务总览</h1>
+        <p class="muted">点击服务查看事实配置；安全服务支持预览、确认和受限变更。</p>
+      </div>
+      <span class="stage-badge">内网管理平面</span>
+    </header>
+
+    {% include "dashboard/_messages.html" %}
+    {% if snapshot_error %}<div class="alert danger">{{ snapshot_error }}</div>{% endif %}
+
+    <section class="section-heading resource-heading">
+      <div><p class="eyebrow">主机资源</p><h2>资源占用</h2></div>
+      <span class="muted">只读实时快照</span>
+    </section>
+    <section class="resource-grid" aria-label="资源占用">
+      {% for card in resource_cards %}<article class="resource-card">
+        <span>{{ card.label }}</span><strong>{{ card.value }}</strong><small>{{ card.detail }}</small>
+        {% if card.has_meter %}<progress max="100" value="{{ card.meter }}">{{ card.meter }}%</progress>{% endif %}
+      </article>{% endfor %}
+    </section>
+
+    <section class="metric-grid" aria-label="状态汇总">
+      <article class="metric"><span>运行中</span><strong>{{ snapshot.summary.running|default:0 }}</strong></article>
+      <article class="metric"><span>已停止</span><strong>{{ snapshot.summary.stopped|default:0 }}</strong></article>
+      <article class="metric"><span>异常</span><strong>{{ snapshot.summary.failed|default:0 }}</strong></article>
+      <article class="metric"><span>未安装</span><strong>{{ snapshot.summary.missing|default:0 }}</strong></article>
+    </section>
+
+    <section class="section-heading">
+      <div><p class="eyebrow">托管服务</p><h2>实际运行状态</h2></div>
+    </section>
+    <section class="service-grid" id="services">
+      {% for service in snapshot.services %}
+      <a class="service-card state-{{ service.state }}" href="{% url 'service-detail' service.id %}">
+        <div class="card-title">
+          <div><h3>{{ service.label }}</h3><code>{{ service.id }}</code></div>
+          <span class="status-pill">{{ service.state }}</span>
+        </div>
+        <p>{{ service.detail|default:"暂无详情" }}</p>
+        <div class="card-meta"><span>{{ service.autostart }}</span><span>{{ service.ports|length }} 组端口</span></div>
+      </a>
+      {% empty %}
+      <article class="empty-state">尚未读取到托管服务。</article>
+      {% endfor %}
+    </section>
+  </main>
+
+</div>
+{% endblock %}

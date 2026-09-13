@@ -172,9 +172,9 @@ class SshScriptContractTests(unittest.TestCase):
         self.assertIn("ConvertTo-ServerKitComparableNetworks", script)
         self.assertIn("Assert-ServerKitSshApplied -Address $managedAddresses -Port $portNumber", script)
         for validation_cmdlet in (
-            "Get-NetFirewallAddressFilter",
-            "Get-NetFirewallPortFilter",
-            "Get-NetTCPConnection",
+            "HNetCfg.FwPolicy2",
+            "ConvertTo-ServerKitComparableNetworks",
+            "Get-ServerKitListeners",
         ):
             self.assertIn(validation_cmdlet, script)
 
@@ -241,20 +241,13 @@ if ($restoredNetworks.Count -ne 1 -or $restoredNetworks[0] -ne "172.31.48.0/20")
 if ($script:reapplyCalls -ne 2) {{ throw "重应用失败后未尝试恢复运行配置" }}
 function Get-ServerKitAllowedNetworks {{ return @("172.31.48.0/20","192.168.0.0/24") }}
 function Get-ServerKitConfig {{ return [ordered]@{{ Address=@("10.20.0.101","192.168.0.100"); Port="5080" }} }}
-$script:firewallDirection="Inbound"
-$script:firewallProtocol="TCP"
+$script:firewallDirection=1
+$script:firewallProtocol=6
 $script:firewallRemote=@("172.31.48.0/20","192.168.0.0/24")
-function Get-NetFirewallRule {{ return [pscustomobject]@{{ Enabled="True"; Direction=$script:firewallDirection; Action="Allow" }} }}
-function Get-NetFirewallPortFilter {{
-    [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)]$InputObject)
-    process {{ return [pscustomobject]@{{ Protocol=$script:firewallProtocol; LocalPort="5080" }} }}
-}}
-function Get-NetFirewallAddressFilter {{
-    [CmdletBinding()] param([Parameter(ValueFromPipeline=$true)]$InputObject)
-    process {{ return [pscustomobject]@{{ LocalAddress=@("10.20.0.101","192.168.0.100"); RemoteAddress=$script:firewallRemote }} }}
-}}
-function Get-Process {{ return [pscustomobject]@{{ Id=42 }} }}
-function Get-NetTCPConnection {{ return @(
+function Get-ServerKitFirewallRule {{ return [pscustomobject]@{{ Enabled=$true; Direction=$script:firewallDirection;
+    Action=1; Protocol=$script:firewallProtocol; LocalPorts="5080"; Profiles=2147483647;
+    LocalAddresses="10.20.0.101,192.168.0.100"; RemoteAddresses=($script:firewallRemote -join ',') }} }}
+function Get-ServerKitListeners {{ return @(
     [pscustomobject]@{{ OwningProcess=42; LocalAddress="10.20.0.101"; LocalPort=5080 }},
     [pscustomobject]@{{ OwningProcess=42; LocalAddress="192.168.0.100"; LocalPort=5080 }}
 ) }}
@@ -266,12 +259,12 @@ $rejected=$false
 try {{ Assert-ServerKitSshApplied -Address @("10.20.0.101","192.168.0.100") -Port 5080 }} catch {{ $rejected=$true }}
 if (-not $rejected) {{ throw "过宽防火墙来源范围未被拒绝" }}
 $script:firewallRemote=@("172.31.48.0/20","192.168.0.0/24")
-$script:firewallProtocol="UDP"
+$script:firewallProtocol=17
 $rejected=$false
 try {{ Assert-ServerKitSshApplied -Address @("10.20.0.101","192.168.0.100") -Port 5080 }} catch {{ $rejected=$true }}
 if (-not $rejected) {{ throw "错误防火墙协议未被拒绝" }}
-$script:firewallProtocol="TCP"
-$script:firewallDirection="Outbound"
+$script:firewallProtocol=6
+$script:firewallDirection=2
 $rejected=$false
 try {{ Assert-ServerKitSshApplied -Address @("10.20.0.101","192.168.0.100") -Port 5080 }} catch {{ $rejected=$true }}
 if (-not $rejected) {{ throw "错误防火墙方向未被拒绝" }}

@@ -661,7 +661,7 @@ class DashboardTests(TestCase):
     def test_sshd_manager_downloads_manage_service_firewall_and_status(self) -> None:
         self.client.force_login(self.viewer)
         expected = {
-            "windows": ("Start-Service sshd", "New-NetFirewallRule", "Stop-Service sshd", "Get-NetTCPConnection", "Get-AuthorizedKeyEntries"),
+            "windows": ("Start-Service sshd", "HNetCfg.FWRule", "Stop-Service sshd", "Get-ServerKitListeners", "Get-AuthorizedKeyEntries"),
             "linux": ("systemctl restart ssh", "ufw allow", "systemctl disable --now ssh", "ss -ltnp", "key_entries"),
             "macos": ("launchctl bootstrap", "socketfilterfw --add", "launchctl bootout", "launchctl print", "key_entries"),
             "android": ("sshd", "只监听 AWG 地址", "pkill -x sshd", "pgrep -x sshd", "key_entries"),

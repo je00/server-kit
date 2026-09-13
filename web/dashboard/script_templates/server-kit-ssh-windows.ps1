@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("menu", "enable", "disable", "status", "keygen", "key-list", "key-add", "key-remove", "auth-status", "auth-harden", "auth-confirm", "auth-rollback", "network-list", "network-add", "network-remove")]
+    [ValidateSet("menu", "enable", "disable", "status", "reconcile", "keygen", "key-list", "key-add", "key-remove", "auth-status", "auth-harden", "auth-confirm", "auth-rollback", "network-list", "network-add", "network-remove")]
     [string]$Action = "menu",
 
     [Parameter(Position = 1)]
@@ -31,6 +31,95 @@ $LegacyAuthMarker = "# 由 server-kit 管理：SSH 端到端仅公钥认证"
 $CallerProfile = if ($env:SERVER_KIT_CALLER_PROFILE) { $env:SERVER_KIT_CALLER_PROFILE } else { $env:USERPROFILE }
 $CallerAccount = if ($env:SERVER_KIT_CALLER_ACCOUNT) { $env:SERVER_KIT_CALLER_ACCOUNT } else { "$env:USERDOMAIN\$env:USERNAME" }
 $script:AuthorizedAccount = $null
+$RecoveryTask = "server-kit-node-ssh-network-recovery"
+$RecoveryScript = Join-Path $AuthStateDirectory "network-manager.ps1"
+
+function Get-ServerKitListeners {
+    # NetTCPIP/CIM can take tens of seconds even with a port filter.
+    $ids = @(Get-Process -Name sshd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+    foreach ($line in (& "$env:WINDIR\System32\netstat.exe" -ano -p tcp)) {
+        $fields = $line.Trim() -split '\s+'
+        if ($fields.Count -eq 5 -and $fields[0] -eq 'TCP' -and
+            $fields[2] -match ':0$' -and $ids -contains [int]$fields[4] -and
+            $fields[1] -match '^(.+):(\d+)$') {
+            [pscustomobject]@{ LocalAddress = $Matches[1].Trim('[', ']'); LocalPort = [int]$Matches[2] }
+        }
+    }
+}
+
+function Get-ServerKitFirewallRule {
+    $policy = New-Object -ComObject HNetCfg.FwPolicy2
+    # COM indexes display names, whereas NetSecurity uses the rule instance ID.
+    foreach ($name in @($FirewallRule, 'server-kit SSH（允许网段）')) {
+        try { return $policy.Rules.Item($name) }
+        catch [System.IO.FileNotFoundException] { }
+        catch [System.Runtime.InteropServices.COMException] {
+            if ($_.Exception.HResult -ne -2147024894) { throw }
+        }
+    }
+    return $null
+}
+
+function Test-ServerKitNetworkApplied {
+    param([string[]]$Address, [int]$Port)
+    $config = Get-ServerKitConfig
+    if ([string]$config.Port -ne [string]$Port -or
+        (Compare-Object @($config.Address | Sort-Object) @($Address | Sort-Object))) { return $false }
+    $rule = Get-ServerKitFirewallRule
+    if (-not $rule -or -not $rule.Enabled -or $rule.Direction -ne 1 -or $rule.Action -ne 1 -or
+        $rule.Protocol -ne 6 -or [string]$rule.LocalPorts -ne [string]$Port -or $rule.Profiles -ne 2147483647) { return $false }
+    $locals = @($rule.LocalAddresses -split ',' | ForEach-Object {
+        $entry = $_.Trim()
+        if ($entry -match '^([0-9.]+)-\1$' -or $entry -match '^([0-9.]+)/(?:32|255\.255\.255\.255)$') { $Matches[1] }
+        else { $entry }
+    } | Sort-Object)
+    $remotes = @(ConvertTo-ServerKitComparableNetworks @($rule.RemoteAddresses -split ',') | Sort-Object)
+    $expected = @(ConvertTo-ServerKitComparableNetworks @(Get-ServerKitAllowedNetworks) | Sort-Object)
+    if ((Compare-Object $locals @($Address | Sort-Object)) -or (Compare-Object $remotes $expected)) { return $false }
+    $listeners = @(Get-ServerKitListeners | Where-Object LocalPort -eq $Port)
+    foreach ($ip in $Address) { if ($listeners.LocalAddress -notcontains $ip) { return $false } }
+    if (@($listeners | Where-Object { $Address -notcontains $_.LocalAddress }).Count) { return $false }
+    return $true
+}
+
+function Install-ServerKitRecovery {
+    if ((Test-Path -LiteralPath $RecoveryScript) -and
+        (Get-FileHash -LiteralPath $PSCommandPath).Hash -eq (Get-FileHash -LiteralPath $RecoveryScript).Hash) {
+        $scheduler = New-Object -ComObject Schedule.Service
+        $scheduler.Connect()
+        $existing = $null
+        try { $existing = $scheduler.GetFolder('\').GetTask($RecoveryTask) } catch [System.IO.FileNotFoundException] { }
+        if ($existing -and $existing.Enabled -and (Get-Service sshd).StartType -eq 'Automatic') { return }
+    }
+    New-Item -ItemType Directory -Path $AuthStateDirectory -Force | Out-Null
+    & icacls.exe $AuthStateDirectory /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw '无法保护 SSH 恢复脚本目录。' }
+    if ($PSCommandPath -ne $RecoveryScript) { Copy-Item -LiteralPath $PSCommandPath -Destination $RecoveryScript -Force }
+    $taskAction = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$RecoveryScript`" reconcile"
+    $triggers = @((New-ScheduledTaskTrigger -AtStartup),
+        (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)))
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 2) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    Register-ScheduledTask -TaskName $RecoveryTask -Action $taskAction -Trigger $triggers `
+        -Settings $settings -User SYSTEM -RunLevel Highest -Force | Out-Null
+    Set-Service -Name sshd -StartupType Automatic
+    & sc.exe failure sshd reset= 86400 actions= restart/15000/restart/30000/restart/60000 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw '无法配置 SSH 失败重试。' }
+}
+
+function Repair-ServerKitNetwork {
+    Assert-ServerKitAdministrator
+    $service = Get-Service sshd -ErrorAction SilentlyContinue
+    if (-not $service -or $service.StartType -eq 'Disabled' -or (Test-Path $AuthTransactionPath)) { return }
+    $config = Get-ServerKitConfig
+    if ($config.Port -eq '未配置') { return }
+    $addresses = @(Get-ServerKitManagedAddresses)
+    # A disconnected tunnel must not cause an unrestricted fallback listener.
+    if (-not $addresses.Count -or (Test-ServerKitNetworkApplied $addresses ([int]$config.Port))) { return }
+    $script:Value = [string]$config.Port
+    Enable-ServerKitSsh -Recovery
+}
 
 function Test-ServerKitAdministrator {
     return (New-Object Security.Principal.WindowsPrincipal(
@@ -262,11 +351,13 @@ function Initialize-ServerKitNetworksFile {
 
 function Get-ServerKitManagedAddresses {
     $networks = @(Get-ServerKitAllowedNetworks)
-    return @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    return @([Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces() |
+        Where-Object OperationalStatus -eq 'Up' | ForEach-Object { $_.GetIPProperties().UnicastAddresses } |
+        Where-Object { $_.Address.AddressFamily -eq 'InterNetwork' } |
         Where-Object {
-            $candidate = $_.IPAddress
+            $candidate = $_.Address.ToString()
             @($networks | Where-Object { Test-ServerKitAddressInCidr $candidate $_ }).Count -gt 0
-        } | Select-Object -ExpandProperty IPAddress -Unique)
+        } | ForEach-Object { $_.Address.ToString() } | Sort-Object -Unique)
 }
 
 function Show-ServerKitNetworks {
@@ -277,55 +368,9 @@ function Show-ServerKitNetworks {
 }
 
 function Assert-ServerKitSshApplied {
-    param(
-        [Parameter(Mandatory = $true)][string[]]$Address,
-        [Parameter(Mandatory = $true)][int]$Port
-    )
-    $expectedNetworks = @(Get-ServerKitAllowedNetworks)
-    $config = Get-ServerKitConfig
-    if ([string]$config.Port -ne [string]$Port) {
-        throw "sshd_config 端口校验失败：期望 $Port，实际 $($config.Port)。"
-    }
-    $missingConfigAddresses = @($Address | Where-Object { @($config.Address) -notcontains $_ })
-    $extraConfigAddresses = @($config.Address | Where-Object { $Address -notcontains $_ })
-    if ($missingConfigAddresses.Count -or $extraConfigAddresses.Count) {
-        throw "sshd_config 监听地址校验失败。"
-    }
-
-    $rule = Get-NetFirewallRule -Name $FirewallRule -ErrorAction SilentlyContinue
-    if (-not $rule -or [string]$rule.Enabled -ne "True") {
-        throw "防火墙规则 $FirewallRule 未启用。"
-    }
-    if ([string]$rule.Direction -ne "Inbound" -or [string]$rule.Action -ne "Allow") {
-        throw "防火墙规则方向或动作校验失败。"
-    }
-    $portFilter = $rule | Get-NetFirewallPortFilter -ErrorAction Stop
-    if ([string]$portFilter.Protocol -ne "TCP" -or [string]$portFilter.LocalPort -ne [string]$Port) {
-        throw "防火墙协议或端口校验失败：期望 TCP/$Port。"
-    }
-    $addressFilter = $rule | Get-NetFirewallAddressFilter -ErrorAction Stop
-    $actualLocalAddresses = @($addressFilter.LocalAddress)
-    $actualRemoteNetworks = @($addressFilter.RemoteAddress)
-    $missingLocalAddresses = @($Address | Where-Object { $actualLocalAddresses -notcontains $_ })
-    $extraLocalAddresses = @($actualLocalAddresses | Where-Object { $Address -notcontains $_ })
-    if ($missingLocalAddresses.Count -or $extraLocalAddresses.Count) {
-        throw "防火墙本机地址校验失败。"
-    }
-    $expectedComparableNetworks = @(ConvertTo-ServerKitComparableNetworks $expectedNetworks)
-    $actualComparableNetworks = @(ConvertTo-ServerKitComparableNetworks $actualRemoteNetworks)
-    $missingRemoteNetworks = @($expectedComparableNetworks | Where-Object { $actualComparableNetworks -notcontains $_ })
-    $extraRemoteNetworks = @($actualComparableNetworks | Where-Object { $expectedComparableNetworks -notcontains $_ })
-    if ($missingRemoteNetworks.Count -or $extraRemoteNetworks.Count) {
-        throw "防火墙允许来源网段校验失败。脚本期望：$($expectedNetworks -join ', ')；Windows 返回：$($actualRemoteNetworks -join ', ')。"
-    }
-
-    $sshdProcessIds = @(Get-Process -Name sshd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
-    $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-        Where-Object { $sshdProcessIds -contains $_.OwningProcess -and $_.LocalPort -eq $Port })
-    foreach ($expectedAddress in $Address) {
-        if (-not @($listeners | Where-Object { $_.LocalAddress -eq $expectedAddress }).Count) {
-            throw "SSH 未在 $expectedAddress`:$Port 实际监听。"
-        }
+    param([string[]]$Address, [int]$Port)
+    if (-not (Test-ServerKitNetworkApplied $Address $Port)) {
+        throw "SSH 监听或防火墙允许网段校验失败。"
     }
 }
 
@@ -424,13 +469,11 @@ function Remove-ServerKitNetwork {
 function Show-ServerKitStatus {
     $service = Get-Service sshd -ErrorAction SilentlyContinue
     $serviceState = if ($service) { $service.Status } else { "未安装" }
-    $startup = if ($service) { (Get-CimInstance Win32_Service -Filter "Name='sshd'").StartMode } else { "—" }
+    $startup = if ($service) { $service.StartType } else { "—" }
     $config = Get-ServerKitConfig
-    $sshdProcessIds = @(Get-Process -Name sshd -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
-    $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-        Where-Object { $sshdProcessIds -contains $_.OwningProcess } |
+    $listeners = @(Get-ServerKitListeners |
         ForEach-Object { "$($_.LocalAddress):$($_.LocalPort)" } | Select-Object -Unique)
-    $firewall = Get-NetFirewallRule -Name $FirewallRule -ErrorAction SilentlyContinue
+    $firewall = Get-ServerKitFirewallRule
     Write-Host "server-kit SSH 当前状态" -ForegroundColor Cyan
     Write-Host "  服务：$serviceState"
     Write-Host "  自启：$startup"
@@ -453,8 +496,11 @@ function Get-EffectiveAuthValue([string]$Name) {
     if (-not $sshd -or -not (Test-Path -LiteralPath $ConfigPath)) { return "" }
     $account = Get-SelectedAuthorizedAccount
     $user = ($account.Name -split '\\')[-1]
-    $output = & $sshd -T -f $ConfigPath -C "user=$user,host=localhost,addr=127.0.0.1" 2>$null
-    if ($LASTEXITCODE -ne 0) { return "" }
+    if (-not $script:CacheAuth -or $null -eq $script:AuthSnapshot) {
+        $output = & $sshd -T -f $ConfigPath -C "user=$user,host=localhost,addr=127.0.0.1" 2>$null
+        if ($LASTEXITCODE -ne 0) { return "" }
+        if ($script:CacheAuth) { $script:AuthSnapshot = $output }
+    } else { $output = $script:AuthSnapshot }
     $line = @($output | Where-Object { $_ -match "^$([regex]::Escape($Name))\s+" } | Select-Object -First 1)
     if (-not $line.Count) { return "" }
     return (($line[0] -split '\s+', 2)[1]).Trim()
@@ -470,6 +516,9 @@ function Test-ServerKitAuthHardened {
 }
 
 function Show-ServerKitAuthStatus {
+    $script:CacheAuth = $true
+    $script:AuthSnapshot = $null
+    try {
     $keys = 0
     try { $keys = @(Get-AuthorizedKeyEntries).Count } catch { $keys = 0 }
     $password = Get-EffectiveAuthValue "passwordauthentication"
@@ -478,6 +527,7 @@ function Show-ServerKitAuthStatus {
     if (Test-Path -LiteralPath $AuthTransactionPath) { $state += "（等待确认）" }
     Write-Host "  公钥：$keys 把有效公钥（账户 $((Get-SelectedAuthorizedAccount).Name)）"
     Write-Host "  认证：$state · PasswordAuthentication $(if ($password) { $password } else { '未知' }) · AuthenticationMethods $(if ($methods) { $methods } else { '未知' })"
+    } finally { $script:CacheAuth = $false; $script:AuthSnapshot = $null }
 }
 
 function Stop-ServerKitAuthRollback {
@@ -569,6 +619,7 @@ function Confirm-ServerKitAuthHardened {
 }
 
 function Enable-ServerKitSsh {
+    param([switch]$Recovery)
     Assert-ServerKitAdministrator
     $portNumber = 0
     if (-not [int]::TryParse($Value, [ref]$portNumber) -or $portNumber -lt 1 -or $portNumber -gt 65535) {
@@ -578,19 +629,40 @@ function Enable-ServerKitSsh {
     $managedAddresses = @(Get-ServerKitManagedAddresses)
     if (-not $managedAddresses.Count) { throw "没有找到允许网段对应的本机 IPv4 地址。" }
 
-    Write-Host "[2/5] 安装系统自带 OpenSSH Server..."
-    $capability = Get-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0"
-    if ($capability.State -ne "Installed") { Add-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0" | Out-Null }
-    Disable-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue
+    if (-not (Get-Service sshd -ErrorAction SilentlyContinue) -or -not (Get-ServerKitSshdPath)) {
+        if ($Recovery) { throw 'SSH 组件缺失；请交互式运行 enable 修复。' }
+        Write-Host "[2/5] 检查并安装缺失的 OpenSSH Server..."
+        $capability = Get-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0"
+        if ($capability.State -ne "Installed") { Add-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0" | Out-Null }
+    } else { Write-Host "[2/5] OpenSSH 已安装，跳过组件检查。" }
     if (-not (Test-Path -LiteralPath $ConfigPath)) { Start-Service sshd; Stop-Service sshd }
     if (-not (Test-Path -LiteralPath $ConfigPath)) { throw "找不到 OpenSSH 配置文件：$ConfigPath" }
+    if (-not $Recovery) { Install-ServerKitRecovery }
+    $current = [IO.File]::ReadAllText($ConfigPath, [Text.Encoding]::UTF8)
+    $candidate = ConvertTo-ServerKitSshdConfig -Content $current -Address $managedAddresses -Port $portNumber
+    if ($candidate -eq $current -and (Test-ServerKitNetworkApplied $managedAddresses $portNumber)) {
+        Write-Host 'SSH 配置和监听未变化，无需重启。'
+        return
+    }
 
     Write-Host "[3/5] 绑定允许地址并设置端口 $portNumber..."
     $backupPath = "$ConfigPath.server-kit.bak.$(Get-Date -Format yyyyMMddHHmmss)"
     Copy-Item -LiteralPath $ConfigPath -Destination $backupPath -Force
+    $oldRule = Get-ServerKitFirewallRule
+    $oldRuleValues = @{}
+    if ($oldRule) {
+        foreach ($property in @('Enabled','Direction','Action','Protocol','Profiles','LocalPorts','LocalAddresses','RemoteAddresses')) {
+            $oldRuleValues[$property] = $oldRule.$property
+        }
+    }
+    $policy = New-Object -ComObject HNetCfg.FwPolicy2
+    $defaultRule = $null
+    $defaultRuleInfo = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
+    if ($defaultRuleInfo) { $defaultRule = $policy.Rules.Item($defaultRuleInfo.DisplayName) }
+    $defaultEnabled = if ($defaultRule) { $defaultRule.Enabled } else { $false }
     $content = [IO.File]::ReadAllText($ConfigPath, [Text.Encoding]::UTF8)
     $content = ConvertTo-ServerKitSshdConfig -Content $content -Address $managedAddresses -Port $portNumber
-    [IO.File]::WriteAllText($ConfigPath, $content, (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($ConfigPath, $candidate, (New-Object Text.UTF8Encoding($false)))
     $sshd = Join-Path $env:WINDIR "System32\OpenSSH\sshd.exe"
     try {
         & $sshd -t -f $ConfigPath
@@ -604,25 +676,38 @@ function Enable-ServerKitSsh {
     Set-Service -Name sshd -StartupType Automatic
     try {
         if ((Get-Service sshd).Status -eq "Running") { Restart-Service sshd -Force } else { Start-Service sshd }
-    } catch {
-        Copy-Item -LiteralPath $backupPath -Destination $ConfigPath -Force
-        Start-Service sshd -ErrorAction SilentlyContinue
-        throw "新配置启动失败，已经恢复旧配置：$($_.Exception.Message)"
-    }
-
     Write-Host "[5/5] 应用 SSH 允许来源网段..."
-    Remove-NetFirewallRule -Name $FirewallRule -ErrorAction SilentlyContinue
-    New-NetFirewallRule -Name $FirewallRule -DisplayName "server-kit SSH（允许网段）" `
-        -Direction Inbound -Action Allow -Protocol TCP -LocalAddress $managedAddresses `
-        -LocalPort $portNumber -RemoteAddress (Get-ServerKitAllowedNetworks) | Out-Null
-    Disable-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue
+    $policy = New-Object -ComObject HNetCfg.FwPolicy2
+    $rule = Get-ServerKitFirewallRule
+    if (-not $rule) { $rule = New-Object -ComObject HNetCfg.FWRule; $rule.Name = $FirewallRule }
+    $rule.Enabled = $false
+    $rule.Direction = 1; $rule.Action = 1; $rule.Protocol = 6; $rule.Profiles = 2147483647
+    $rule.LocalPorts = [string]$portNumber
+    $rule.LocalAddresses = $managedAddresses -join ','
+    $rule.RemoteAddresses = (Get-ServerKitAllowedNetworks) -join ','
+    $rule.Enabled = $true
+    if (-not (Get-ServerKitFirewallRule)) { $policy.Rules.Add($rule) }
+    if ($defaultRule) { $defaultRule.Enabled = $false }
     Assert-ServerKitSshApplied -Address $managedAddresses -Port $portNumber
+    } catch {
+        $applyError = $_.Exception.Message
+        Copy-Item -LiteralPath $backupPath -Destination $ConfigPath -Force
+        if ($oldRule) {
+            $oldRule.Enabled = $false
+            foreach ($property in $oldRuleValues.Keys) { if ($property -ne 'Enabled') { $oldRule.$property = $oldRuleValues[$property] } }
+            $oldRule.Enabled = $oldRuleValues.Enabled
+        } else { $policy.Rules.Remove($FirewallRule) }
+        if ($defaultRule) { $defaultRule.Enabled = $defaultEnabled }
+        Restart-Service sshd -Force
+        throw "应用失败，已恢复 SSH 配置和防火墙：$applyError"
+    }
     Write-Host "完成：SSH 正在 $($managedAddresses -join ', ') 的 $portNumber 端口监听，防火墙规则已校验。" -ForegroundColor Green
-    Show-ServerKitStatus
+    if (-not $Recovery) { Show-ServerKitStatus }
 }
 
 function Disable-ServerKitSsh {
     Assert-ServerKitAdministrator
+    Unregister-ScheduledTask -TaskName $RecoveryTask -Confirm:$false -ErrorAction SilentlyContinue
     Write-Host "[1/2] 删除 SSH 允许网段防火墙规则..."
     Remove-NetFirewallRule -Name $FirewallRule -ErrorAction SilentlyContinue
     Disable-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue
@@ -742,7 +827,7 @@ function Initialize-AuthorizedKeysFile {
 }
 
 function Get-AuthorizedKeyEntries {
-    $path = Initialize-AuthorizedKeysFile
+    $path = Get-AuthorizedKeysPath
     $tool = Get-SshKeygenPath
     $entries = @()
     $lineNumber = 0
@@ -846,10 +931,16 @@ function Remove-AuthorizedKey {
 
 function Invoke-ServerKitAction([string]$SelectedAction, [string]$SelectedValue) {
     $script:Value = $SelectedValue
+    $mutex = New-Object Threading.Mutex($false, 'Global\server-kit-node-ssh-change')
+    $locked = $false
+    try {
+    try { $locked = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $locked = $true }
+    if (-not $locked) { throw '另一项 SSH 操作正在运行，请稍后重试。' }
     switch ($SelectedAction) {
         "enable" { Enable-ServerKitSsh }
         "disable" { Disable-ServerKitSsh }
         "status" { Show-ServerKitStatus }
+        "reconcile" { Repair-ServerKitNetwork }
         "keygen" { New-LocalSshKey }
         "key-list" { Show-AuthorizedKeys }
         "key-add" { Add-AuthorizedKey }
@@ -863,6 +954,7 @@ function Invoke-ServerKitAction([string]$SelectedAction, [string]$SelectedValue)
         "network-remove" { Remove-ServerKitNetwork }
         default { throw "不支持的操作：$SelectedAction" }
     }
+    } finally { if ($locked) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
 }
 
 function Write-ServerKitMenu {

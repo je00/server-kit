@@ -24,6 +24,11 @@ AUTH_END="# server-kit 仅公钥认证结束"
 CALLER_USER="${SUDO_USER:-$(id -un)}"
 [[ -n "$CALLER_USER" ]] || CALLER_USER="$(id -un)"
 AUTHORIZED_USER="$CALLER_USER"
+RECOVERY_LABEL="com.server-kit.ssh-network-recovery"
+RECOVERY_PLIST="/Library/LaunchDaemons/${RECOVERY_LABEL}.plist"
+RECOVERY_SCRIPT="/Library/PrivilegedHelperTools/server-kit-ssh-network.sh"
+RECOVERY_MODE=0
+AUTH_SNAPSHOT=""
 
 usage() {
   echo "用法：$0 [menu | status | enable <端口> | disable | network-list | network-add <IPv4 CIDR> | network-remove <IPv4 CIDR> | keygen [名称] | key-list | key-add | key-remove <序号> | auth-status | auth-harden | auth-confirm | auth-rollback]"
@@ -149,9 +154,10 @@ show_status() {
   local addresses port service startup listeners firewall remote_login
   addresses="$(awk '$1 == "ListenAddress" {print $2}' "$CONFIG" 2>/dev/null | paste -sd, -)"
   port="$(configured_value Port)"
-  if launchctl print "system/$LABEL" >/dev/null 2>&1; then service="运行中"; else service="已停止"; fi
-  if launchctl print-disabled system 2>/dev/null | grep -Eq '"com\.server-kit\.sshd"[[:space:]]*=>[[:space:]]*true'; then startup="已禁用"; else startup="已启用"; fi
-  listeners="$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk '$1 == "sshd" {print $9}' | paste -sd, -)"
+  if launchctl print "system/$LABEL" 2>/dev/null | grep -Eq '^[[:space:]]*state = running'; then service="运行中"; else service="已停止"; fi
+  if [[ ! -f "$PLIST" ]]; then startup="未安装"
+  elif launchctl print-disabled system 2>/dev/null | grep -Eq '"com\.server-kit\.sshd"[[:space:]]*=>[[:space:]]*true'; then startup="已禁用"; else startup="已启用"; fi
+  listeners="$(lsof -nP -a -c sshd -iTCP -sTCP:LISTEN 2>/dev/null | awk '$1 == "sshd" {print $9}' | paste -sd, -)"
   if /usr/libexec/ApplicationFirewall/socketfilterfw --listapps 2>/dev/null | grep -q '/usr/sbin/sshd'; then firewall="已允许系统 sshd"; else firewall="未开放"; fi
   remote_login="$(systemsetup -getremotelogin 2>/dev/null | sed 's/.*: //')"
   echo "server-kit SSH 当前状态"
@@ -237,8 +243,12 @@ valid_authorized_key_count() {
 effective_auth_value() {
   local key="$1"
   [[ -f "$CONFIG" ]] || return 0
-  /usr/sbin/sshd -T -f "$CONFIG" -C "user=${AUTHORIZED_USER},host=localhost,addr=127.0.0.1" 2>/dev/null |
-    awk -v key="$key" '$1 == key {print $2; exit}'
+  if [[ -n "$AUTH_SNAPSHOT" ]]; then
+    awk -v key="$key" '$1 == key {print $2; exit}' <<<"$AUTH_SNAPSHOT"
+  else
+    /usr/sbin/sshd -T -f "$CONFIG" -C "user=${AUTHORIZED_USER},host=localhost,addr=127.0.0.1" 2>/dev/null |
+      awk -v key="$key" '$1 == key {print $2; exit}'
+  fi
 }
 
 auth_is_hardened() {
@@ -252,6 +262,7 @@ show_auth_status() {
   local password="未知" methods="未知" state="未启用" keys=0
   keys="$(valid_authorized_key_count)"
   if [[ -f "$CONFIG" ]]; then
+    AUTH_SNAPSHOT="$(/usr/sbin/sshd -T -f "$CONFIG" -C "user=${AUTHORIZED_USER},host=localhost,addr=127.0.0.1" 2>/dev/null || true)"
     password="$(effective_auth_value passwordauthentication)"; password="${password:-未知}"
     methods="$(effective_auth_value authenticationmethods)"; methods="${methods:-未知}"
     auth_is_hardened && state="仅公钥" || state="允许其他认证"
@@ -259,6 +270,7 @@ show_auth_status() {
   [[ -f "$AUTH_TRANSACTION" ]] && state="${state}（等待确认）"
   echo "  公钥：${keys} 把有效公钥（账户 ${AUTHORIZED_USER}）"
   echo "  认证：${state} · PasswordAuthentication ${password} · AuthenticationMethods ${methods}"
+  AUTH_SNAPSHOT=""
 }
 
 write_auth_config() {
@@ -430,6 +442,56 @@ remove_key() {
   cat "$output" >"$authorized_path"; rm -f "$output"; ensure_authorized_keys; echo "公钥已删除。"; list_keys
 }
 
+network_applied() {
+  local expected actual listeners deny_pattern="*" cidr
+  [[ -f "$CONFIG" && "$(configured_value Port)" == "$PORT" ]] || return 1
+  expected="$(managed_addresses | sort -u)"
+  [[ -n "$expected" ]] || return 1
+  actual="$(awk '$1 == "ListenAddress" {print $2}' "$CONFIG" | sort -u)"
+  [[ "$expected" == "$actual" ]] || return 1
+  while IFS= read -r cidr; do deny_pattern+=",!$cidr"; done < <(allowed_networks)
+  grep -Fxq "Match Address $deny_pattern" "$CONFIG" || return 1
+  listeners="$(lsof -nP -a -c sshd -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null |
+    awk '$1 == "sshd" {sub(/:[0-9]+$/, "", $9); print $9}' | sort -u)"
+  [[ "$expected" == "$listeners" ]]
+}
+
+install_network_recovery() {
+  install -d -o root -g wheel -m 0755 /Library/PrivilegedHelperTools
+  [[ "${0:A}" == "$RECOVERY_SCRIPT" ]] || install -o root -g wheel -m 0700 "${0:A}" "$RECOVERY_SCRIPT"
+  local temporary
+  temporary="$(mktemp)"
+  cat >"$temporary" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>$RECOVERY_LABEL</string>
+<key>ProgramArguments</key><array><string>/bin/zsh</string><string>$RECOVERY_SCRIPT</string><string>reconcile</string></array>
+<key>RunAtLoad</key><true/><key>StartInterval</key><integer>30</integer>
+<key>ProcessType</key><string>Background</string>
+</dict></plist>
+EOF
+  plutil -lint "$temporary" >/dev/null
+  if ! cmp -s "$temporary" "$RECOVERY_PLIST"; then
+    install -o root -g wheel -m 0644 "$temporary" "$RECOVERY_PLIST"
+    launchctl bootout "system/$RECOVERY_LABEL" 2>/dev/null || true
+  fi
+  rm -f "$temporary"
+  launchctl enable "system/$RECOVERY_LABEL"
+  launchctl print "system/$RECOVERY_LABEL" >/dev/null 2>&1 || launchctl bootstrap system "$RECOVERY_PLIST"
+}
+
+reconcile_network() {
+  require_root
+  [[ -f "$PLIST" && -f "$CONFIG" && ! -f "$AUTH_TRANSACTION" ]] || return 0
+  launchctl print-disabled system 2>/dev/null | grep -Eq '"com\.server-kit\.sshd"[[:space:]]*=>[[:space:]]*true' && return 0
+  PORT="$(configured_value Port)"
+  [[ -n "$(managed_addresses)" ]] || return 0
+  network_applied && return 0
+  RECOVERY_MODE=1
+  enable_ssh
+}
+
 enable_ssh() {
   require_root
   if [[ ! "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1 || PORT > 65535 )); then
@@ -438,24 +500,32 @@ enable_ssh() {
     exit 2
   fi
   echo "[1/5] 检查允许网段对应的本机地址..."
-  local preserve_auth=0 address cidr deny_pattern="*"
+  local preserve_auth=0 address cidr deny_pattern="*" backup="" candidate active_config attempt
   local -a addresses
   addresses=("${(@f)$(managed_addresses)}")
   ((${#addresses[@]} > 0)) || { echo "没有找到允许网段对应的本机 IPv4 地址。" >&2; exit 1; }
+  if ((RECOVERY_MODE == 0)); then install_network_recovery; fi
+  if network_applied && ! launchctl print-disabled system 2>/dev/null | grep -Eq '"com\.server-kit\.sshd"[[:space:]]*=>[[:space:]]*true'; then
+    echo 'SSH 配置和监听未变化，无需重启。'
+    return 0
+  fi
 
   echo "[2/5] 关闭系统默认的全接口远程登录..."
-  if ! systemsetup -f -setremotelogin off >/dev/null 2>&1; then
+  if ((RECOVERY_MODE == 0)) && ! systemsetup -getremotelogin 2>/dev/null | grep -q ': Off$' &&
+     ! systemsetup -f -setremotelogin off >/dev/null 2>&1; then
     echo "无法关闭系统远程登录。请在‘系统设置 → 通用 → 共享’中先关闭远程登录。" >&2
     exit 1
   fi
 
   echo "[3/5] 使用系统 sshd 配置允许地址和端口 $PORT..."
-  ssh-keygen -A
+  if ((RECOVERY_MODE == 0)); then ssh-keygen -A; fi
   install -d -m 0755 "$CONFIG_DIR"
   if [[ -f "$CONFIG" ]]; then
     grep -Fxq "$AUTH_BEGIN" "$CONFIG" && preserve_auth=1 || true
-    cp -a "$CONFIG" "${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
+    backup="${CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
+    cp -a "$CONFIG" "$backup"
   fi
+  candidate="$(mktemp "${CONFIG}.candidate.XXXXXX")"
   {
     echo '# 由 server-kit 管理：只监听允许网段对应的本机地址'
     echo "Port $PORT"
@@ -466,10 +536,17 @@ enable_ssh() {
     echo 'Match all'
     echo 'PidFile /var/run/server-kit-sshd.pid'
     echo 'Include /etc/ssh/sshd_config'
-  } >"$CONFIG"
-  chmod 0644 "$CONFIG"
+  } >"$candidate"
+  active_config="$CONFIG"; CONFIG="$candidate"
   ((preserve_auth == 0)) || write_auth_config
-  /usr/sbin/sshd -t -f "$CONFIG"
+  CONFIG="$active_config"
+  if ! /usr/sbin/sshd -t -f "$candidate"; then
+    rm -f "$candidate"
+    echo '候选 SSH 配置无效，运行配置未更改。' >&2
+    return 1
+  fi
+  chmod 0644 "$candidate"
+  mv -f "$candidate" "$CONFIG"
 
   echo "[4/5] 配置系统 launchd 自启动..."
   cat >"$PLIST" <<EOF
@@ -492,15 +569,34 @@ EOF
   echo "[5/5] 启动 SSH 并允许系统 sshd 通过应用防火墙..."
   launchctl bootout "system/$LABEL" 2>/dev/null || true
   launchctl enable "system/$LABEL"
-  launchctl bootstrap system "$PLIST"
+  if ! launchctl bootstrap system "$PLIST"; then
+    [[ -z "$backup" ]] || cp -a "$backup" "$CONFIG"
+    launchctl bootstrap system "$PLIST" 2>/dev/null || true
+    echo '启动失败，已尝试恢复原配置。' >&2
+    return 1
+  fi
   /usr/libexec/ApplicationFirewall/socketfilterfw --add /usr/sbin/sshd >/dev/null 2>&1 || true
   /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /usr/sbin/sshd >/dev/null 2>&1 || true
+  for attempt in {1..10}; do
+    network_applied && break
+    sleep 0.2
+  done
+  if ! network_applied; then
+    if [[ -n "$backup" ]]; then
+      cp -a "$backup" "$CONFIG"
+      launchctl kickstart -k "system/$LABEL" || true
+    fi
+    echo 'SSH 实际监听未通过校验，已尝试恢复原配置。' >&2
+    return 1
+  fi
   echo "完成：SSH 正在 ${addresses[*]} 的 ${PORT} 端口监听。"
-  show_status
+  if ((RECOVERY_MODE == 0)); then show_status; fi
 }
 
 disable_ssh() {
   require_root
+  launchctl disable "system/$RECOVERY_LABEL"
+  launchctl bootout "system/$RECOVERY_LABEL" 2>/dev/null || true
   echo "[1/2] 删除系统 sshd 的应用防火墙允许项..."
   /usr/libexec/ApplicationFirewall/socketfilterfw --remove /usr/sbin/sshd >/dev/null 2>&1 || true
   echo "[2/2] 停止 SSH 并禁止开机自启..."
@@ -511,10 +607,19 @@ disable_ssh() {
 }
 
 invoke_action() {
+  local lock_fd="" action_result=0
+  if [[ "$1" == (enable|disable|reconcile|network-add|network-remove|auth-harden|auth-confirm|auth-rollback) ]]; then
+    require_root
+    zmodload zsh/system
+    : >>/var/run/server-kit-ssh.lock
+    zsystem flock -t 0 -f lock_fd /var/run/server-kit-ssh.lock || { echo '另一项 SSH 操作正在运行。' >&2; return 1; }
+  fi
+  {
   case "$1" in
     enable) enable_ssh ;;
     disable) disable_ssh ;;
     status) show_status ;;
+    reconcile) reconcile_network ;;
     keygen) generate_key ;;
     key-list) list_keys ;;
     key-add) add_key ;;
@@ -528,6 +633,9 @@ invoke_action() {
     network-remove) remove_network ;;
     *) usage; return 2 ;;
   esac
+  } always {
+    [[ -z "$lock_fd" ]] || zsystem flock -u "$lock_fd"
+  }
 }
 
 write_menu() {
@@ -594,4 +702,6 @@ show_menu() {
   done
 }
 
-if [[ "$ACTION" == "menu" ]]; then show_menu; else invoke_action "$ACTION"; fi
+if [[ "${SERVER_KIT_LIBRARY_ONLY:-0}" != "1" ]]; then
+  if [[ "$ACTION" == "menu" ]]; then show_menu; else invoke_action "$ACTION"; fi
+fi

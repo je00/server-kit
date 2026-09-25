@@ -11,12 +11,16 @@ if (base.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(base.hostn
     || base.username || base.password || base.pathname !== "/") throw new Error("Only an isolated loopback preview is allowed.");
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), "server-kit-topology-"));
 console.log(`Topology QA started: ${directory}`);
-const report = {directory, checks: [], screenshots: [], errors: [], blocked: [], performance: [], controlStyles: []};
+const report = {directory, checks: [], screenshots: [], errors: [], blocked: [], performance: [], controlStyles: [], readability: []};
 const password = "Preview-only-2026!";
 const topologyURL = new URL("network/topology/", base).href;
 const hook = (page, name) => page.locator(`[data-topology-${name}]`);
 const jsonRoute = url => url.origin === base.origin && url.pathname === "/network/topology/" && url.searchParams.get("format") === "json";
 const jsonResponse = response => jsonRoute(new URL(response.url()));
+// Tall element captures can composite an offscreen fixed skip link into the
+// middle of the image. Hide only that unfocused, already-offscreen link during
+// capture; it remains available and unchanged in every interaction test.
+const captureStyle = ".skip-link:not(:focus) { visibility: hidden !important; }";
 
 function syntheticModel(original, id = "hub", revision = "") {
   const hub = {...original.nodes.find(node => node.id === "hub")};
@@ -38,6 +42,44 @@ function syntheticModel(original, id = "hub", revision = "") {
       relation: selected.kind === "hub" ? "inbound" : node.kind === "hub" ? "outbound" : "mutual", label: "配置授权"})),
     summary: {nodes: 40, awg: 40, vless: 0, enabled: 40, disabled: 0, pending: 0},
     observed_at: new Date().toISOString()};
+}
+
+function realisticModel(original, id) {
+  const hub = {...original.nodes.find(node => node.id === "hub")};
+  const template = original.nodes.find(node => node.kind === "awg");
+  const names = ["home-desktop", "office-workstation", "nas-primary", "nas-backup", "lab-server", "travel-laptop", "media-server", "family-desktop", "iphone-travel", "android-daily", "retired-phone"];
+  const nodes = [hub, ...names.map((name, index) => {
+    const kind = index < 8 ? "awg" : "vless", disabled = index === 10;
+    return {...template, id: `${kind}:${name}`, name, kind, kind_label: kind === "awg" ? "AmneziaWG" : "VLESS",
+      address: kind === "awg" ? `10.20.2.${index + 10}` : "", protected: index === 0,
+      availability: disabled ? "disabled" : "enabled", state: disabled ? "已禁用" : "已启用"};
+  })];
+  const scopes = [["全部协议 · 全部端口"], ["TCP · 22, 443"], ["UDP · 53"], ["TCP · 8000-8010"]];
+  const targets = nodes.filter(node => node.kind !== "vless");
+  const sources = nodes.filter(node => node.kind !== "hub" && node.availability === "enabled");
+  const links = [];
+  for (let offset = 0; links.length < 46 && offset < targets.length; offset++) {
+    for (let index = 0; index < sources.length && links.length < 46; index++) {
+      const source = sources[index], target = targets[(index + offset) % targets.length];
+      if (source.id === target.id) continue;
+      const allowedScopes = scopes[(index + offset) % scopes.length];
+      links.push({source: source.id, target: target.id, status: allowedScopes === scopes[0] ? "allowed" : "partial", label: allowedScopes.join("；"), scopes: allowedScopes});
+    }
+  }
+  const selected = nodes.find(node => node.id === id) || nodes[1];
+  function access(from, to) {
+    const link = links.find(link => link.source === from.id && link.target === to.id);
+    if (link) return {status: link.status, label: "配置授权", summary: link.label, scopes: link.scopes, warnings: []};
+    const status = from.kind === "hub" ? "unknown" : to.kind === "vless" ? "not_applicable" : from.availability === "disabled" || to.availability === "disabled" ? "inactive" : "denied";
+    return {status, label: status === "unknown" ? "未检测" : status === "inactive" ? "已禁用" : status === "not_applicable" ? "不适用" : "未授权", summary: "没有确认可用的配置授权", scopes: [], warnings: []};
+  }
+  const relations = nodes.filter(node => node.id !== selected.id).map(node => {
+    const forward = access(selected, node), reverse = access(node, selected);
+    const outbound = ["allowed", "partial"].includes(forward.status), inbound = ["allowed", "partial"].includes(reverse.status);
+    return {node, forward, reverse, relation: outbound && inbound ? "mutual" : outbound ? "outbound" : inbound ? "inbound" : "unknown", label: "配置访问关系"};
+  });
+  return {...original, nodes, selected, selected_id: selected.id, links, relations,
+    summary: {nodes: 11, awg: 8, vless: 3, enabled: 10, disabled: 1, pending: 0}, observed_at: new Date().toISOString()};
 }
 
 async function session(browser, width = 390, options = {}) {
@@ -69,13 +111,39 @@ async function session(browser, width = 390, options = {}) {
 
 async function screenshot(page, label) {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, `${label}: page overflow`);
-  await page.screenshot({path: path.join(directory, `${label}.png`), fullPage: true});
+  await page.evaluate(() => document.activeElement?.blur());
+  await page.screenshot({path: path.join(directory, `${label}.png`), fullPage: true, style: captureStyle});
   report.screenshots.push(`${label}.png`);
 }
 
 async function choose(page, id) {
   // Native selection is available at every zoom and pan position.
   await hook(page, "select").selectOption(id);
+}
+
+async function openViewTools(page) {
+  if (!await hook(page, "view-options").evaluate(details => details.open)) await hook(page, "view-options").locator("summary").click();
+}
+
+async function closeViewTools(page) {
+  if (await hook(page, "view-options").evaluate(details => details.open)) await hook(page, "view-options").locator("summary").click();
+}
+
+async function mode(page, name) {
+  await page.locator(`button[data-topology-mode="${name}"]`).click();
+  await settleGraph(page);
+}
+
+async function direction(page, name) {
+  await page.locator(`[data-topology-direction="${name}"]`).click();
+  await settleGraph(page);
+}
+
+async function selectAndWait(page, id) {
+  if (await hook(page, "select").inputValue() === id) await choose(page, id);
+  else await Promise.all([page.waitForResponse(jsonResponse), choose(page, id)]);
+  await page.waitForFunction(() => !document.querySelector("[data-topology-root]").hasAttribute("aria-busy"));
+  await settleGraph(page);
 }
 
 async function assertGraph(page, expectedLinks = null) {
@@ -89,12 +157,15 @@ async function assertGraph(page, expectedLinks = null) {
     const edges = edgeElements.map(edge => ({tag: edge.tagName.toLowerCase(), source: edge.dataset.source, target: edge.dataset.target,
       key: edge.dataset.linkKey, dash: getComputedStyle(edge).strokeDasharray, marker: edge.getAttribute("marker-end"),
       reverseMarker: edge.getAttribute("marker-start"), bidirectional: edge.dataset.bidirectional === "true"}));
-    const labels = [...graph.querySelectorAll("[data-topology-edge-label]")].filter(label => getComputedStyle(label.closest("[data-topology-link]") || label).display !== "none").map(label => ({source: label.dataset.source, target: label.dataset.target,
-      key: label.dataset.linkKey, text: label.textContent.trim()}));
-    const spokes = [...graph.querySelectorAll("[data-topology-spoke]")].map(line => ({source: line.dataset.source, target: line.dataset.target}));
+    const labelElements = [...graph.querySelectorAll("[data-topology-edge-label]")].filter(label => getComputedStyle(label.closest("[data-topology-link]") || label).display !== "none");
+    const labels = labelElements.map(label => ({source: label.dataset.source, target: label.dataset.target,
+      key: label.dataset.linkKey, text: label.textContent.trim(), title: label.querySelector("title")?.textContent}));
+    const spokes = [...graph.querySelectorAll("[data-topology-spoke]")].filter(line => getComputedStyle(line).display !== "none").map(line => ({source: line.dataset.source, target: line.dataset.target, dash: getComputedStyle(line).strokeDasharray}));
     return {nodes, selectedId, edges, labels, spokes, options: document.querySelector("[data-topology-select]").options.length,
+      labelsAbovePaths: edgeElements.every(edge => labelElements.every(label => Boolean(edge.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING))),
       initialLinks: JSON.parse(document.getElementById("topology-data").textContent).links,
-      focus: document.querySelector("[data-topology-focus]").checked};
+      mode: document.querySelector('[data-topology-mode][aria-pressed="true"]')?.dataset.topologyMode,
+      direction: document.querySelector('[data-topology-direction][aria-pressed="true"]')?.dataset.topologyDirection};
   });
   const {nodes, selectedId, edges, labels, spokes} = value;
   assert.equal(nodes.filter(node => node.id === "hub").length, 1, "one central VPS");
@@ -102,32 +173,47 @@ async function assertGraph(page, expectedLinks = null) {
   assert.equal(nodes.length, value.options, "every configured node exists in the graph at once");
   assert.ok(nodes.every(node => Number.isFinite(node.x) && Number.isFinite(node.y)), "nodes expose finite layout coordinates");
   assert.equal(nodes.filter(node => node.pressed === "true").length, 1, "one selected node remains present at every zoom");
-  assert.equal(spokes.length, nodes.length - 1, "one structural hub spoke for every client");
+  assert.ok(["overview", "relations"].includes(value.mode), "one graph mode is selected");
+  assert.ok(["forward", "reverse"].includes(value.direction), "one relationship direction is selected");
+  assert.equal(spokes.length, nodes.length - 1, "every graph mode preserves one structural hub spoke per client");
   const ids = new Set(nodes.map(node => node.id));
   for (const line of spokes) {
     assert.ok((line.source === "hub") !== (line.target === "hub"), "structural spokes remain distinct from client-to-client permission links");
     assert.ok(ids.has(line.source) && ids.has(line.target));
+    assert.ok(line.dash && line.dash !== "none" && line.dash !== "0px", "VPS access spokes are dashed");
   }
-  const expected = (expectedLinks || value.initialLinks).filter(link => !value.focus || link.source === selectedId || link.target === selectedId);
+  const expected = value.mode === "overview" ? [] : (expectedLinks || value.initialLinks).filter(link =>
+    value.direction === "forward" ? link.source === selectedId : link.target === selectedId);
   const directions = edges.flatMap(edge => edge.bidirectional ? [[edge.source, edge.target].join("→"), [edge.target, edge.source].join("→")] : [[edge.source, edge.target].join("→")]);
   assert.deepEqual(directions.sort(), expected.map(edge => [edge.source, edge.target].join("→")).sort(),
-    "only confirmed allowed/partial directed links are drawn; unknown/inactive directions are absent");
+    "only the selected node's chosen confirmed direction is drawn; overview, unrelated, unknown, and inactive directions are absent");
   assert.equal(labels.length, edges.length, "each permission path has a port label");
+  assert.equal(value.labelsAbovePaths, true, "all permission paths paint below every protocol/port label");
   for (const edge of edges) {
     assert.equal(edge.tag, "path");
     assert.ok(edge.dash && edge.dash !== "none" && edge.dash !== "0px", "permission links are dashed");
     assert.ok(edge.marker, "every permission path has a directional arrow");
-    if (edge.bidirectional) assert.ok(edge.reverseMarker, "combined mutual permissions have arrows in both directions");
+    assert.equal(edge.bidirectional, false, "a single-direction inspection must not imply a reverse permission");
     const label = labels.find(label => label.key === edge.key);
     assert.ok(label && label.text, "each permission path has its own readable label");
     const link = expected.find(link => link.source === edge.source && link.target === edge.target);
-    assert.ok(link.scopes.every(scope => label.text.includes(scope)), "edge labels include exact configured protocol/port scopes");
-    if (edge.bidirectional) {
-      const reverse = expected.find(link => link.source === edge.target && link.target === edge.source);
-      assert.deepEqual(reverse.scopes, link.scopes, "only matching port scopes may share a bidirectional path");
-    }
+    assert.ok(link, "every drawn edge exists in the configured selected direction");
+    assert.ok(label.title?.includes(link.label), "compact graph labels retain a full protocol/port tooltip");
   }
+  assert.equal(await hook(page, "direction").first().isVisible(), value.mode === "relations", "direction control is shown only while inspecting relationships");
+  assert.equal(await hook(page, "focus").count(), 0, "the old all-edge focus checkbox is removed");
   assert.equal(await page.locator("[data-topology-prev], [data-topology-next], [data-topology-page]").count(), 0, "graph has no pagination");
+  if (value.mode === "relations") {
+    const inspector = hook(page, "inspector");
+    assert.equal(await inspector.evaluate(node => node.tagName), "ASIDE", "inspector is an accessible complementary region");
+    assert.equal(await inspector.isVisible(), true);
+    const contents = await inspector.innerText();
+    for (const link of expected) for (const scope of link.scopes) assert.ok(contents.includes(scope), "inspector preserves every exact configured protocol/port scope");
+    const rows = await inspector.locator("[data-topology-access-target]").evaluateAll(items => items.map(item => ({id: item.dataset.topologyAccessTarget,
+      scopes: [...item.querySelectorAll(".topology-access-scopes li")].map(scope => scope.textContent)})));
+    assert.deepEqual(rows.sort((a, b) => a.id.localeCompare(b.id)), expected.map(link => ({id: value.direction === "forward" ? link.target : link.source, scopes: link.scopes})).sort((a, b) => a.id.localeCompare(b.id)),
+      "inspector contains only the correct endpoint and complete exact scopes for the selected direction");
+  }
 }
 
 async function assertReadOnly(session) {
@@ -144,7 +230,10 @@ async function viewState(page) {
     selected: await hook(page, "select").inputValue(),
     options: await hook(page, "select").locator("option").allTextContents(),
     nodes: await hook(page, "node").allTextContents(),
-    details: await hook(page, "details").innerText(),
+    details: await hook(page, "details").textContent(),
+    inspector: await hook(page, "inspector").textContent(),
+    mode: await page.locator('[data-topology-mode][aria-pressed="true"]').getAttribute("data-topology-mode"),
+    direction: await page.locator('[data-topology-direction][aria-pressed="true"]').getAttribute("data-topology-direction"),
     graph: await layoutState(page),
   };
 }
@@ -162,6 +251,168 @@ async function layoutState(page) {
 
 async function settleGraph(page) {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
+async function readabilitySnapshot(page) {
+  return hook(page, "graph").evaluate(graph => {
+    const canvas = graph.getBoundingClientRect();
+    const visible = node => node.getClientRects().length && getComputedStyle(node.closest("[data-topology-link]") || node).display !== "none";
+    const names = [...graph.querySelectorAll("[data-topology-node] strong")].map(node => ({text: node.textContent, rect: node.getBoundingClientRect(), font: parseFloat(getComputedStyle(node).fontSize)}));
+    const cards = [...graph.querySelectorAll("[data-topology-node]")].map(node => ({id: node.dataset.topologyNode, rect: node.getBoundingClientRect()}));
+    const labels = [...graph.querySelectorAll("[data-topology-edge-label]")].filter(visible).map(node => ({key: node.dataset.linkKey, rect: node.getBoundingClientRect(),
+      text: node.querySelector("text")?.textContent || node.textContent, font: parseFloat(getComputedStyle(node.querySelector("text") || node).fontSize)}));
+    const area = (a, b) => Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left)) * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+    // A subpixel antialiased border touch does not hide text; use the same
+    // one-CSS-pixel tolerance as the canvas-boundary checks in this suite.
+    const cardOccludes = (a, b) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
+      Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
+    return {nodes: names.length, displayedPermissionPaths: [...graph.querySelectorAll("[data-topology-edge]")].filter(visible).length,
+      clippedPortLabels: labels.filter(({rect}) => rect.left < canvas.left + 1 || rect.right > canvas.right - 1 || rect.top < canvas.top + 1 || rect.bottom > canvas.bottom - 1).map(label => label.key),
+      portLabelPairsOverlapping: labels.flatMap((a, i) => labels.slice(i + 1).filter(b => area(a.rect, b.rect) > 4).map(b => [a.key, b.key])),
+      portLabelsCoveringNames: labels.flatMap(a => names.filter(b => area(a.rect, b.rect) > 4).map(b => [a.key, b.text])),
+      portLabelsBehindCards: labels.flatMap(a => cards.filter(b => cardOccludes(a.rect, b.rect)).map(b => ({link: a.key, node: b.id, area: area(a.rect, b.rect),
+        label: {left: a.rect.left, top: a.rect.top, right: a.rect.right, bottom: a.rect.bottom},
+        card: {left: b.rect.left, top: b.rect.top, right: b.rect.right, bottom: b.rect.bottom}}))),
+      nodeCardsOverlapping: cards.flatMap((a, index) => cards.slice(index + 1).filter(b => area(a.rect, b.rect) > 4).map(b => [a.id, b.id])),
+      clippedNodeCards: cards.filter(({rect}) => rect.left < canvas.left - 1 || rect.right > canvas.right + 1 || rect.top < canvas.top - 1 || rect.bottom > canvas.bottom + 1).map(card => card.id),
+      namesOverlapping: names.flatMap((a, i) => names.slice(i + 1).filter(b => area(a.rect, b.rect) > 4).map(b => [a.text, b.text])),
+      nodeNameFont: Math.min(...names.map(node => node.font)), portLabelFont: labels.length ? Math.min(...labels.map(label => label.font)) : null,
+      canvasTopAtPageStart: Math.round(canvas.top + scrollY), canvasHeight: Math.round(canvas.height), viewportHeight: innerHeight,
+      controlsAboveCanvas: [...document.querySelectorAll("[data-topology-root] button, [data-topology-root] input, [data-topology-root] select")]
+        .filter(node => node.getClientRects().length && !node.closest("details:not([open])") && node.getBoundingClientRect().bottom <= canvas.top).length};
+  });
+}
+
+async function setTheme(page, width, theme) {
+  if (width <= 900) await page.locator("[data-mobile-menu] > summary").click();
+  await page.locator(`[data-theme-value="${theme}"]:visible`).first().click();
+  if (width <= 900) await page.locator("[data-mobile-menu-close]").click();
+  assert.equal(await page.locator("html").getAttribute("data-theme"), theme);
+}
+
+async function readabilityAudit(browser, label) {
+  for (const width of [320, 390, 768, 1440]) {
+    const state = await session(browser, width);
+    const {page, context} = state;
+    try {
+      const original = await (await context.request.get(topologyURL + "?format=json")).json();
+      for (const count of [6, 12]) {
+        let model = original;
+        if (count === 12) {
+          model = realisticModel(original);
+          assert.equal(model.nodes.length, 12);
+          assert.equal(model.links.length, 46, "realistic scene reproduces twelve nodes and forty-six directed permissions");
+          await page.route(jsonRoute, route => {
+            const id = new URL(route.request().url()).searchParams.get("node");
+            return route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify(realisticModel(original, id))});
+          });
+          await mode(page, "overview");
+          await Promise.all([page.waitForResponse(jsonResponse), hook(page, "refresh").click()]);
+          await page.waitForFunction(() => document.querySelectorAll("[data-topology-node]").length === 12);
+          await openViewTools(page);
+          await hook(page, "reset").click();
+          await hook(page, "view-options").locator("summary").click();
+        }
+        await settleGraph(page);
+        await mode(page, "overview");
+        await assertGraph(page, model.links);
+        const selected = await hook(page, "select").inputValue();
+        const before = await layoutState(page), requestsBefore = state.requests.length;
+        // The initial selection is still an actionable node, even without an RPC.
+        await page.locator(`[data-topology-node="${selected}"]`).click();
+        await settleGraph(page);
+        assert.equal(await page.locator('button[data-topology-mode="relations"]').getAttribute("aria-pressed"), "true", "clicking an already selected node enters relationships");
+        assert.equal(state.requests.length, requestsBefore, "already-selected inspection is local");
+        await mode(page, "overview");
+        assert.deepEqual((await layoutState(page)).positions, before.positions, "mode switch does not rearrange nodes");
+        assert.deepEqual((await layoutState(page)).viewport, before.viewport, "mode switch does not move the camera");
+        assert.equal(await hook(page, "select").inputValue(), selected, "returning to overview preserves selection");
+        assert.equal(state.requests.length, requestsBefore, "overview return needs no fetch");
+        const target = model.nodes.find(node => node.kind === "awg" && model.links.some(link => link.source === node.id && link.target !== "hub"));
+        assert.ok(target, "readability scene includes client-to-client permissions");
+        for (const theme of ["light", "dark", "sky"]) {
+          await setTheme(page, width, theme);
+          for (const stateName of ["overview", "forward", "reverse"]) {
+            if (stateName === "overview") await mode(page, "overview");
+            else {
+              await selectAndWait(page, target.id);
+              await direction(page, stateName);
+            }
+            await assertGraph(page, model.links);
+            await settleGraph(page);
+            const metrics = await readabilitySnapshot(page);
+            report.readability.push({browser: label, width, theme, state: stateName, configuredDirections: model.links.length, ...metrics});
+            const name = `${label}-${width}-${count}-node-${stateName}-${theme}.png`;
+            await page.evaluate(() => document.activeElement?.blur());
+            await page.locator(".topology-panel").screenshot({path: path.join(directory, name), style: captureStyle});
+            report.screenshots.push(name);
+            assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, "realistic topology never overflows the page horizontally");
+            assert.deepEqual(metrics.portLabelPairsOverlapping, [], `${name}: port labels must not overlap one another`);
+            assert.deepEqual(metrics.clippedPortLabels, [], `${name}: complete port labels stay inside the canvas`);
+            assert.deepEqual(metrics.portLabelsCoveringNames, [], `${name}: port labels must not cover node names`);
+            assert.deepEqual(metrics.portLabelsBehindCards, [], `${name}: complete port labels must not be hidden behind node cards`);
+            assert.deepEqual(metrics.nodeCardsOverlapping, [], `${name}: node cards must not obscure each other`);
+            assert.deepEqual(metrics.clippedNodeCards, [], `${name}: fitted overview keeps all node cards within the canvas`);
+            assert.deepEqual(metrics.namesOverlapping, [], `${name}: node names must not overlap`);
+            assert.ok(metrics.nodeNameFont >= 13, `${name}: node names must be at least 13px, not tiny diagram captions`);
+            if (metrics.portLabelFont !== null) assert.ok(metrics.portLabelFont >= 12, `${name}: graph protocol/port labels must be at least 12px`);
+            if (stateName === "overview") {
+              assert.equal(metrics.displayedPermissionPaths, 0);
+              assert.ok(metrics.controlsAboveCanvas <= 5, "default overview keeps secondary controls out of the primary toolbar");
+              if (width <= 390) assert.ok(metrics.canvasTopAtPageStart < 700, "mobile overview exposes the canvas in the first viewport");
+            } else {
+              const scopeMetrics = await page.locator(".topology-access-scopes li").evaluateAll(items => items.map(item => ({font: parseFloat(getComputedStyle(item).fontSize), overflow: item.scrollWidth > item.clientWidth + 1})));
+              const configured = model.links.filter(link => stateName === "forward" ? link.source === target.id : link.target === target.id);
+              assert.equal(scopeMetrics.length, configured.reduce((total, link) => total + link.scopes.length, 0), "inspector shows exactly the complete scope entries for this permitted direction");
+              assert.ok(scopeMetrics.every(scope => scope.font >= 13 && !scope.overflow), "inspector scopes are readable and wrap within the available width");
+            }
+          }
+        }
+        const beforeDirectionChange = state.requests.length;
+        await direction(page, "reverse");
+        await selectAndWait(page, "hub");
+        assert.equal(await page.locator('[data-topology-direction="reverse"]').getAttribute("aria-pressed"), "true", "changing selection preserves the user's chosen direction");
+        assert.ok(state.requests.length <= beforeDirectionChange + 1, "direction changes are local; only selection may fetch");
+      }
+      await assertReadOnly(state);
+      report.checks.push(`${label} ${width}: six-node and realistic twelve-node/46-direction scenes, overview and both selected directions, complete inspector, readable type and collision-free labels in three themes`);
+    } finally { await context.close(); }
+  }
+}
+
+async function layerSmoke(browser, label) {
+  const state = await session(browser, 320);
+  const {page, context} = state;
+  try {
+    const original = await (await context.request.get(topologyURL + "?format=json")).json();
+    const model = realisticModel(original);
+    await page.route(jsonRoute, route => route.fulfill({status: 200, contentType: "application/json",
+      body: JSON.stringify(realisticModel(original, new URL(route.request().url()).searchParams.get("node")))}));
+    await Promise.all([page.waitForResponse(jsonResponse), hook(page, "refresh").click()]);
+    await page.waitForFunction(() => document.querySelectorAll("[data-topology-node]").length === 12);
+    await openViewTools(page);
+    await hook(page, "reset").click();
+    await closeViewTools(page);
+    await selectAndWait(page, model.nodes[1].id);
+    await direction(page, "forward");
+    await setTheme(page, 320, "light");
+    await assertGraph(page, model.links);
+    assert.equal(await hook(page, "graph").evaluate(graph => {
+      const paths = [...graph.querySelectorAll("[data-topology-edge]")], labels = [...graph.querySelectorAll("[data-topology-edge-label]")];
+      return paths.length > 0 && labels.length === paths.length && paths.every(path => labels.every(label =>
+        Boolean(path.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING)));
+    }), true, "all permission paths paint before every label, so a later edge cannot cross over port text");
+    const metrics = await readabilitySnapshot(page);
+    assert.deepEqual(metrics.clippedPortLabels, []);
+    assert.deepEqual(metrics.portLabelsBehindCards, []);
+    report.readability.push({browser: label, width: 320, state: "forward-layer-fixed", ...metrics});
+    await page.evaluate(() => document.activeElement?.blur());
+    const name = `${label}-320-12-node-layer-fixed.png`;
+    await page.locator(".topology-panel").screenshot({path: path.join(directory, name), style: captureStyle});
+    report.screenshots.push(name);
+    await assertReadOnly(state);
+    report.checks.push(`${label}: fresh 320px twelve-node forward view paints every port label above every permission path`);
+  } finally { await context.close(); }
 }
 
 async function assertLegibleOverview(page, width) {
@@ -185,10 +436,20 @@ async function assertLegibleOverview(page, width) {
 
 async function assertControlContrast(page, label, width, theme) {
   const styles = await page.evaluate(async () => {
-    const buttons = [...document.querySelectorAll(".topology-content button.secondary-button")].filter(button => button.getClientRects().length);
-    await Promise.all(buttons.flatMap(button => button.getAnimations()).map(animation => animation.finished.catch(() => {})));
+    const buttons = [...document.querySelectorAll(".topology-content button.secondary-button")].filter(button => button.getClientRects().length && !button.closest("details:not([open])"));
+    await Promise.race([
+      Promise.all(buttons.flatMap(button => button.getAnimations()).map(animation => animation.finished.catch(() => {}))),
+      new Promise(resolve => setTimeout(resolve, 500)),
+    ]);
+    const rgba = color => { const values = color.match(/[\d.]+/g).map(Number); return [...values.slice(0, 3), values[3] ?? 1]; };
+    const composite = (front, back) => front.slice(0, 3).map((value, index) => value * front[3] + back[index] * (1 - front[3]));
+    const background = element => {
+      const layers = [];
+      for (let node = element; node; node = node.parentElement) layers.unshift(rgba(getComputedStyle(node).backgroundColor));
+      return layers.reduce((color, layer) => composite(layer, color), [255, 255, 255]);
+    };
     const luminance = color => {
-      const rgb = color.match(/[\d.]+/g).slice(0, 3).map(Number).map(value => {
+      const rgb = color.map(value => {
         const channel = value / 255;
         return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
       });
@@ -196,13 +457,17 @@ async function assertControlContrast(page, label, width, theme) {
     };
     return buttons.map(button => {
       const style = getComputedStyle(button);
-      const backgroundLum = luminance(style.backgroundColor), foregroundLum = luminance(style.color);
+      // Selected mode buttons use translucent theme fills; contrast is measured
+      // against the composited panel, not the opaque RGB channels of that tint.
+      const effectiveBackground = background(button);
+      const backgroundLum = luminance(effectiveBackground), foregroundLum = luminance(composite(rgba(style.color), effectiveBackground));
       return {text: button.textContent.trim(), disabled: button.disabled, background: style.backgroundColor, color: style.color,
+        effectiveBackground,
         appearance: style.appearance, webkitAppearance: style.webkitAppearance, image: style.backgroundImage,
         backgroundLum, contrast: (Math.max(backgroundLum, foregroundLum) + .05) / (Math.min(backgroundLum, foregroundLum) + .05)};
     });
   });
-  assert.ok(styles.length >= 5, "topology controls expose themed buttons");
+  assert.ok(styles.length >= 3, "primary topology controls expose themed buttons");
   for (const style of styles) {
     assert.equal(style.appearance, "none", `${label} ${theme} ${style.text}: native appearance must not override the themed background`);
     assert.equal(style.image, "none", `${label} ${theme} ${style.text}: no native background image`);
@@ -218,7 +483,7 @@ async function coldMobileLayouts(browser, label) {
     try {
       await assertLegibleOverview(page, 320);
       const name = `${label}-320-cold-${attempt}.png`;
-      await hook(page, "graph").screenshot({path: path.join(directory, name)});
+      await hook(page, "graph").screenshot({path: path.join(directory, name), style: captureStyle});
       report.screenshots.push(name);
     } finally { await context.close(); }
   }
@@ -250,11 +515,14 @@ async function directManipulation(browser, label, width, touch = false) {
   const state = await session(browser, width);
   const {page, context, requests} = state;
   try {
+    const model = await (await context.request.get(topologyURL + "?format=json")).json();
+    const source = model.links.find(link => link.source !== "hub").source;
+    await selectAndWait(page, source);
     await hook(page, "fit").click();
     await hook(page, "graph").scrollIntoViewIfNeeded();
     const original = await layoutState(page);
     const selected = await hook(page, "select").inputValue();
-    const nodeId = original.positions.find(node => node.id !== "hub" && node.id !== selected).id;
+    const nodeId = model.links.find(link => link.source === selected && link.target !== "hub")?.target || "hub";
     const node = page.locator(`[data-topology-node="${nodeId}"]`);
     const box = await node.boundingBox();
     const beforeRequests = requests.length;
@@ -292,12 +560,14 @@ async function directManipulation(browser, label, width, touch = false) {
     assert.deepEqual(panned.positions, beforePan.positions, "panning does not change world coordinates");
     if (touch) assert.equal(await page.evaluate(() => scrollY), beforePanScroll, "touch panning stays inside the graph");
     const beforeZoom = panned.viewport.scale;
+    await openViewTools(page);
     await hook(page, "zoom-in").click();
     await settleGraph(page);
     assert.ok((await layoutState(page)).viewport.scale > beforeZoom, "zoom-in raises scale");
     await hook(page, "zoom-out").click();
     await settleGraph(page);
     assert.ok((await layoutState(page)).viewport.scale < beforeZoom * 1.01, "zoom-out lowers scale");
+    await closeViewTools(page);
     await hook(page, "graph").scrollIntoViewIfNeeded();
     const zoomBox = await hook(page, "graph").boundingBox();
     const gestureScale = (await layoutState(page)).viewport.scale;
@@ -322,9 +592,9 @@ async function directManipulation(browser, label, width, touch = false) {
     assert.equal(await page.evaluate(() => scrollY), gestureScroll, "zoom gesture does not scroll the document");
     await hook(page, "fit").click();
     assert.deepEqual((await layoutState(page)).positions, moved.positions, "fit preserves customized layout");
-    await hook(page, "focus").check();
+    await direction(page, "reverse");
     await assertGraph(page);
-    await hook(page, "focus").uncheck();
+    await direction(page, "forward");
     await assertGraph(page);
     await screenshot(page, `${label}-${width}-${touch ? "touch" : "mouse"}-dragged`);
     if (!touch) {
@@ -341,10 +611,11 @@ async function directManipulation(browser, label, width, touch = false) {
       assert.notDeepEqual((await layoutState(page)).positions, keyboardPositions, "keyboard moves a focused node");
       assert.equal(requests.length, beforeKeyboardRequests);
     }
+    await openViewTools(page);
     await hook(page, "reset").click();
     assert.deepEqual((await layoutState(page)).positions, original.positions, "reset restores the deterministic layout");
     await assertReadOnly(state);
-    report.checks.push(`${label} ${width}: ${touch ? "trusted touch and pinch" : "mouse, wheel, and keyboard"} node drag/pan, port-label updates, zoom/fit/reset, layout persistence, and optional edge focus`);
+    report.checks.push(`${label} ${width}: ${touch ? "trusted touch and pinch" : "mouse, wheel, and keyboard"} node drag/pan, port-label updates, zoom/fit/reset, layout persistence, and directional inspection`);
   } finally { await context.close(); }
 }
 
@@ -413,12 +684,14 @@ async function responsiveThemes(browser, label, width) {
   const state = await session(browser, width);
   const {page, context} = state;
   try {
-    assert.equal(await hook(page, "focus").isChecked(), false, "the initial graph displays all permission links");
+    assert.equal(await page.locator('button[data-topology-mode="overview"]').getAttribute("aria-pressed"), "true", "initial graph is a clean star overview");
+    assert.equal(await hook(page, "view-options").evaluate(details => details.open), false, "secondary view controls are initially collapsed");
+    assert.equal(await hook(page, "full-details").evaluate(details => details.open), false, "the exhaustive permission list is initially collapsed with JavaScript");
     await assertGraph(page);
     await assertLegibleOverview(page, width);
     if (width === 390) {
       const name = `${label}-390-initial-graph.png`;
-      await hook(page, "graph").screenshot({path: path.join(directory, name)});
+      await hook(page, "graph").screenshot({path: path.join(directory, name), style: captureStyle});
       report.screenshots.push(name);
     }
     assert.match(await hook(page, "root").innerText(), /未检测/);
@@ -428,29 +701,27 @@ async function responsiveThemes(browser, label, width) {
     const targetButton = hook(page, "node").filter({hasText: target.split(":").slice(1).join(":")});
     await Promise.all([page.waitForResponse(jsonResponse), width < 768 ? targetButton.tap() : targetButton.click()]);
     await page.waitForFunction(id => document.querySelector("[data-topology-select]").value === id, target);
-    assert.match(await hook(page, "details").innerText(), new RegExp(target.split(":").slice(1).join(":")));
+    assert.match(await hook(page, "details").textContent(), new RegExp(target.split(":").slice(1).join(":")));
+    assert.equal(await page.locator('button[data-topology-mode="relations"]').getAttribute("aria-pressed"), "true", "node click enters relationship mode");
     for (const theme of ["dark", "light", "sky"]) {
-      if (width <= 900) await page.locator("[data-mobile-menu] > summary").click();
-      await page.locator(`[data-theme-value="${theme}"]:visible`).first().click();
-      if (width <= 900) await page.locator("[data-mobile-menu-close]").click();
-      assert.equal(await page.locator("html").getAttribute("data-theme"), theme);
+      await setTheme(page, width, theme);
       await assertControlContrast(page, label, width, theme);
       await assertGraph(page);
       await assertLegibleOverview(page, width);
       await screenshot(page, `${label}-${width}-${theme}`);
       if (width === 1440) {
         const name = `${label}-${width}-${theme}-controls.png`;
-        await page.locator(".topology-panel").screenshot({path: path.join(directory, name)});
+        await page.locator(".topology-panel").screenshot({path: path.join(directory, name), style: captureStyle});
         report.screenshots.push(name);
       }
       if (theme === "light") {
         const name = `${label}-${width}-graph.png`;
-        await hook(page, "graph").screenshot({path: path.join(directory, name)});
+        await hook(page, "graph").screenshot({path: path.join(directory, name), style: captureStyle});
         report.screenshots.push(name);
       }
     }
     await assertReadOnly(state);
-    report.checks.push(`${label} ${width}: every node, dashed permission directions/port labels, touch/click selection, three themes, no overflow or navigation`);
+    report.checks.push(`${label} ${width}: clean overview, all nodes, single-direction inspection, touch/click selection, three themes, no overflow or navigation`);
   } finally { await context.close(); }
 }
 
@@ -526,6 +797,21 @@ async function cancellationAndTimeout(browser, label) {
     const target = original.nodes.find(node => node.kind === "awg" && node.id !== original.selected_id);
     const next = await (await context.request.get(topologyURL + "?format=json&node=" + encodeURIComponent(target.id))).json();
     const before = await viewState(page);
+    const modeReached = gate(), modeDelayed = gate();
+    await page.route(jsonRoute, async route => {
+      modeReached.release(); await modeDelayed.promise;
+      try { await route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify(next)}); }
+      catch (error) { if (!/closed|disposed|aborted|interception|already handled/i.test(error.message)) throw error; }
+    });
+    await choose(page, target.id);
+    await modeReached.promise;
+    await mode(page, "overview");
+    assert.equal(await hook(page, "root").getAttribute("aria-busy"), null, "returning to overview cancels a pending selection");
+    assert.deepEqual(await viewState(page), before, "returning to overview restores the prior selection and layout");
+    modeDelayed.release();
+    await page.waitForTimeout(150);
+    assert.deepEqual(await viewState(page), before, "a late selected-node response cannot force the user out of overview");
+    await page.unroute(jsonRoute);
     const reached = gate(), delayed = gate();
     await page.route(jsonRoute, async route => {
       reached.release();
@@ -575,7 +861,7 @@ async function cancellationAndTimeout(browser, label) {
     await Promise.all([page.waitForResponse(jsonResponse), hook(page, "refresh").click()]);
     await page.waitForFunction(() => document.querySelector("[data-topology-status]").dataset.state === "ready");
     await assertReadOnly(state);
-    report.checks.push(`${label}: pagehide cancels late responses and restores controls; 15-second deadline preserves the view and permits retry`);
+    report.checks.push(`${label}: overview return and pagehide cancel late responses; 15-second deadline preserves the view and permits retry`);
   } finally { releases.forEach(release => release()); await context.close(); }
 }
 
@@ -605,6 +891,7 @@ async function stressAndRace(browser, label) {
     assert.ok(renderMs < 8000, "40-node dense graph renders without freezing the page");
     assert.equal(await hook(page, "node").count(), 41, "all 40 clients and the hub are mounted together");
     const positions = (await layoutState(page)).positions;
+    await openViewTools(page);
     await hook(page, "search").fill("synthetic-39");
     assert.equal(await hook(page, "node").count(), 41, "search preserves every node");
     assert.equal(await hook(page, "graph").locator("[data-topology-node].is-match").count(), 1, "search highlights its match");
@@ -615,6 +902,7 @@ async function stressAndRace(browser, label) {
     assert.equal(await hook(page, "node").count(), 41, "an unmatched search does not hide configured nodes");
     assert.equal(await hook(page, "graph").locator("[data-topology-node].is-match").count(), 0);
     await hook(page, "search").fill("");
+    await closeViewTools(page);
     const frameMs = await page.evaluate(async () => {
       const started = performance.now();
       for (let frame = 0; frame < 12; frame++) await new Promise(resolve => requestAnimationFrame(resolve));
@@ -628,24 +916,24 @@ async function stressAndRace(browser, label) {
     await oldReached;
     await Promise.all([page.waitForResponse(response => jsonResponse(response) && new URL(response.url()).searchParams.get("node") === finalId), choose(page, finalId)]);
     await page.waitForFunction(id => document.querySelector("[data-topology-select]").value === id, finalId);
-    const finalDetails = await hook(page, "details").innerText();
+    const finalDetails = await hook(page, "details").textContent();
     assert.match(finalDetails, /synthetic-01/);
     releaseOld();
     // Let both the network and rendering queues settle after the stale response.
     await page.waitForTimeout(200);
     assert.equal(await hook(page, "select").inputValue(), finalId, "late response cannot restore stale selection");
-    assert.equal(await hook(page, "details").innerText(), finalDetails, "late response cannot replace current details");
+    assert.equal(await hook(page, "details").textContent(), finalDetails, "late response cannot replace current details");
     await hook(page, "fit").click();
-    await hook(page, "focus").check();
     await assertGraph(page, denseModel.links);
-    assert.equal(await hook(page, "node").count(), 41, "focus only filters edges");
+    assert.equal(await hook(page, "node").count(), 41, "directional inspection never drops nodes");
     await screenshot(page, `${label}-390-many-nodes-focused`);
-    await hook(page, "focus").uncheck();
+    await mode(page, "overview");
     await screenshot(page, `${label}-390-many-nodes`);
     await page.setViewportSize({width: 320, height: 844});
     await page.waitForTimeout(50);
     await hook(page, "fit").click();
     await assertGraph(page, denseModel.links);
+    await mode(page, "relations");
     await screenshot(page, `${label}-320-many-nodes`);
     await page.setViewportSize({width: 768, height: 1000});
     await page.waitForTimeout(50);
@@ -673,7 +961,7 @@ async function stressAndRace(browser, label) {
     report.performance.find(item => item.browser === label).denseDragMs = denseDragMs;
     await screenshot(page, `${label}-1440-many-nodes`);
     await assertReadOnly(state);
-    report.checks.push(`${label}: all 40 clients plus hub, 1600 directed permissions, search without hiding, focus without dropping nodes, dense graph performance, and stale request protection`);
+    report.checks.push(`${label}: all 40 clients plus hub, 1600-direction payload with selected-direction rendering, search without hiding, dense graph performance, and stale request protection`);
   } finally { releaseOld?.(); await context.close(); }
 }
 
@@ -699,6 +987,7 @@ async function fixturesAndFallback(browser, label) {
   try {
     assert.match(await fallback.page.locator("body").innerText(), /JavaScript|脚本|未启用交互图/);
     assert.match(await hook(fallback.page, "details").innerText(), /VPS/);
+    assert.equal(await hook(fallback.page, "full-details").evaluate(details => details.open), true, "full fallback detail stays open without JavaScript");
     assert.ok(await hook(fallback.page, "select").isVisible(), "native selection is visible without JavaScript");
     await screenshot(fallback.page, `${label}-390-noscript`);
     report.checks.push(`${label}: empty/pending/error fixtures and readable no-JavaScript fallback`);
@@ -710,6 +999,15 @@ async function fixturesAndFallback(browser, label) {
     for (const [label, engine] of [["chromium", chromium], ["webkit", webkit]]) {
       const browser = await engine.launch();
       try {
+        if (process.argv.includes("--layer-smoke")) {
+          await layerSmoke(browser, label);
+          await directManipulation(browser, label, 1440);
+          continue;
+        }
+        if (process.argv.includes("--readability-audit")) {
+          await readabilityAudit(browser, label);
+          continue;
+        }
         const anonymous = await browser.newContext();
         try {
           const response = await anonymous.request.get(topologyURL + "?format=json", {maxRedirects: 0});
@@ -719,9 +1017,10 @@ async function fixturesAndFallback(browser, label) {
           await interruptedGestures(browser, label);
           continue;
         }
-        if (!process.argv.includes("--keyboard-only")) {
+        if (!process.argv.includes("--keyboard-only") && !process.argv.includes("--functional-only")) {
           await coldMobileLayouts(browser, label);
           for (const width of [320, 390, 768, 1440]) await responsiveThemes(browser, label, width);
+          await readabilityAudit(browser, label);
         }
         if (process.argv.includes("--visual-only")) continue;
         if (!process.argv.includes("--theme-gesture-only")) await keyboardAndErrors(browser, label);
@@ -737,7 +1036,8 @@ async function fixturesAndFallback(browser, label) {
     }
     assert.deepEqual(report.errors, [], "no browser runtime errors");
     assert.deepEqual(report.blocked, [], "no external requests");
-    console.log(JSON.stringify(report, null, 2));
+    console.log(JSON.stringify({directory, checks: report.checks, screenshots: report.screenshots.length, readabilityScenes: report.readability.length,
+      performance: report.performance, errors: report.errors, blocked: report.blocked}, null, 2));
   } catch (error) {
     report.failure = error.stack;
     console.error(error.stack);

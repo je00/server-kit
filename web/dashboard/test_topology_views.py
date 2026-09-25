@@ -106,6 +106,18 @@ class TopologyViewTests(TestCase):
         self.assertContains(response, "data-topology-fit")
         self.assertContains(response, "data-topology-reset")
 
+    @patch("dashboard.topology_views.network_overview", return_value=NETWORK)
+    def test_graph_has_progressive_controls_and_accessible_full_details(self, read):
+        response = self.client.get(self.url)
+        self.assertContains(response, 'data-topology-mode="overview" aria-pressed="true"')
+        self.assertContains(response, 'data-topology-mode="relations"')
+        self.assertContains(response, 'data-topology-direction="forward"')
+        self.assertContains(response, 'data-topology-direction="reverse"')
+        self.assertContains(response, "data-topology-inspector")
+        self.assertContains(response, "data-topology-full-details open")
+        self.assertNotContains(response, "data-topology-focus")
+        read.assert_called_once_with()
+
     @patch("dashboard.topology_views.network_overview")
     def test_read_failures_return_noncacheable_generic_error_without_fake_nodes(self, read):
         for failure in (AgentError("must-not-project-socket", "unavailable"),

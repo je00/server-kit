@@ -205,7 +205,7 @@ BASH
 chmod +x "${fake_systemctl}" "${fake_journalctl}" "${fake_security}" "${fake_mosh}" "${fake_file}" "${fake_awg_manager}" "${fake_vless}" "${fake_qrencode}" "${fake_flock}"
 
 printf 'AWG_IFACE=awg0\nAWG_SERVER_IP=10.20.0.1\n' > "${test_dir}/awg.conf"
-printf 'home-desk\t10.20.0.101\nlab-node\t10.20.0.201\n' > "${test_dir}/awg.tsv"
+printf 'home-desk\t10.20.0.101\napie-p15v\t10.20.0.201\n' > "${test_dir}/awg.tsv"
 printf '{"clients":{"home-iphone":{"enabled":true}}}\n' > "${test_dir}/vless.json"
 printf '{"version":1,"disabled":["home-nas"]}\n' > "${test_dir}/publications.json"
 printf '{}\n' > "${test_dir}/xray.json"
@@ -320,6 +320,9 @@ NFT
 common_env=(
   PATH="${test_dir}:${PATH}"
   SERVER_KIT_TESTING=1
+  # Mock services only: do not inherit the test host's real SSH transport.
+  # The SSH protection cases below provide their own explicit connection.
+  SSH_CONNECTION=""
   SERVER_KIT_QR_TEST_BASE64='iVBORw0KGgoAAAANSUhEUgAAAIAAAACA'
   SYSTEMCTL_BIN="${fake_systemctl}"
   QRENCODE_BIN="${fake_qrencode}"
@@ -362,7 +365,7 @@ common_env=(
 
 : > "${test_dir}/awg-disabled.tsv"
 printf '%s\n' '{"version":1,"clients":{}}' > "${test_dir}/awg-access.json"
-printf '%s\n' '{"schema_version":1,"fqdn":"vpn.example.com"}' > "${test_dir}/public-endpoint.json"
+printf '%s\n' '{"schema_version":1,"fqdn":"gateway-demo.managed.example.com"}' > "${test_dir}/public-endpoint.json"
 proxy_update_error="${test_dir}/proxy-update-error.log"
 if printf '%s' '{"operation":"exit_add","exit_name":"broken","exit_proxy_yaml":"password: must-not-leak"}' | \
   env "${common_env[@]}" SERVER_KIT_CONTROL=1 SERVER_KIT_NETWORK_WRITES=1 \
@@ -378,21 +381,36 @@ if grep -Fq 'must-not-leak' "${proxy_update_error}"; then
 fi
 
 permission_output="$(env "${common_env[@]}" SERVER_KIT_NETWORK_WRITES=1 \
-  bash "${MANAGER}" network permission allow home-desk lab-node 22 tcp --json)"
+  bash "${MANAGER}" network permission allow home-desk apie-p15v 22 tcp --json)"
 PERMISSION_OUTPUT="${permission_output}" python3 - <<'PYTHON' || fail "追加权限响应不正确"
 import json
 import os
 assert json.loads(os.environ["PERMISSION_OUTPUT"]) == {
     "schema_version": 1, "operation": "allow",
-    "client": "home-desk", "target": "lab-node",
+    "client": "home-desk", "target": "apie-p15v",
 }
 PYTHON
 env "${common_env[@]}" SERVER_KIT_NETWORK_WRITES=1 \
-  bash "${MANAGER}" network permission deny home-desk lab-node 22 tcp --json >/dev/null
-grep -Fq 'awg-access-allow:access-allow home-desk lab-node 22 tcp' "${action_log}" ||
+  bash "${MANAGER}" network permission deny home-desk apie-p15v 22 tcp --json >/dev/null
+grep -Fq 'awg-access-allow:access-allow home-desk apie-p15v 22 tcp' "${action_log}" ||
   fail "追加端口权限没有完整传给 AWG 管理器"
-grep -Fq 'awg-access-deny:access-deny home-desk lab-node 22 tcp' "${action_log}" ||
+grep -Fq 'awg-access-deny:access-deny home-desk apie-p15v 22 tcp' "${action_log}" ||
   fail "精确删除权限没有完整传给 AWG 管理器"
+env "${common_env[@]}" SERVER_KIT_NETWORK_WRITES=1 \
+  bash "${MANAGER}" network permission allow home-desk apie-p15v '8002-8004,22,8000-8002' tcp --json >/dev/null
+env "${common_env[@]}" SERVER_KIT_NETWORK_WRITES=1 \
+  bash "${MANAGER}" network permission deny home-desk apie-p15v '22,8000-8004' tcp --json >/dev/null
+grep -Fq 'awg-access-allow:access-allow home-desk apie-p15v 22,8000-8004 tcp' "${action_log}" ||
+  fail "端口范围没有规范化后传给 AWG 管理器"
+grep -Fq 'awg-access-deny:access-deny home-desk apie-p15v 22,8000-8004 tcp' "${action_log}" ||
+  fail "端口范围不能精确删除"
+permission_log_lines="$(wc -l < "${action_log}")"
+if env "${common_env[@]}" SERVER_KIT_NETWORK_WRITES=1 \
+  bash "${MANAGER}" network permission allow home-desk apie-p15v '8004-8000' tcp --json >/dev/null 2>&1; then
+  fail "倒序端口范围被错误接受"
+fi
+[[ "$(wc -l < "${action_log}")" == "${permission_log_lines}" ]] ||
+  fail "无效端口范围触发了底层写操作"
 
 vless_add_output="$(env "${common_env[@]}" SERVER_KIT_NETWORK_WRITES=1 \
   bash "${MANAGER}" network node vless add auto-phone --json)"
@@ -480,7 +498,7 @@ assert value["nodes"]["home-desk"] == ["nas.internal.example", "git.example.com"
 PYTHON
 
 if env "${common_env[@]}" SERVER_KIT_NETWORK_WRITES=1 \
-  bash "${MANAGER}" network domains set home-desk '["*.example.com"]' --json >/dev/null 2>&1; then
+  bash "${MANAGER}" network domains set home-desk '["*.managed.example.com"]' --json >/dev/null 2>&1; then
   fail "覆盖 VPS 域名的通配符被错误接受"
 fi
 python3 - "${test_dir}/node-domains.json" <<'PYTHON' || fail "被拒绝的通配符改变了现有记录"

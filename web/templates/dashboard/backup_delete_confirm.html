@@ -5,7 +5,7 @@
 {% block body %}
 <div class="app-shell">
   {% include "dashboard/_navigation.html" %}
-  <main class="content detail-content">
+  <main id="main-content" tabindex="-1" class="content detail-content">
     <a class="back-link" href="{% url 'backups' %}">← 返回配置备份</a>
     <header class="page-header"><div><p class="eyebrow">root 实时影响预览</p><h1>{{ task.preview.title }}</h1><p class="muted">{{ task.preview.summary }}</p></div><span class="stage-badge">{{ task.state_label }}</span></header>
     <section class="inventory-panel">

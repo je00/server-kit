@@ -60,7 +60,7 @@ printf '9.9.9.9\n' > "${CERT_IP_PATH}"
 printf 'payload\n' > "${CLASH_PAYLOAD_DIR}/subscription.yaml"
 
 get_public_ip() { printf '8.8.8.8\n'; }
-get_publication_address() { printf 'vpn.duckdns.org\n'; }
+get_publication_address() { printf 'gateway-demo.duckdns.org\n'; }
 install_certbot() { CERTBOT_BIN="${test_dir}/certbot"; }
 obtain_public_certificate() { printf 'obtain:%s\n' "$1" >> "${action_log}"; }
 deploy_public_certificate() {
@@ -84,7 +84,7 @@ systemctl() {
   esac
 }
 openssl() {
-  if [[ "$*" == *"-checkhost vpn.duckdns.org"* ]] && grep -Fq 'vpn.duckdns.org' "${CERT_PATH}"; then
+  if [[ "$*" == *"-checkhost gateway-demo.duckdns.org"* ]] && grep -Fq 'gateway-demo.duckdns.org' "${CERT_PATH}"; then
     return 0
   fi
   return 1
@@ -100,11 +100,11 @@ import sys
 
 for path in sys.argv[1:]:
     with open(path, encoding="utf-8") as source:
-        assert json.load(source)["server_address"] == "vpn.duckdns.org"
+        assert json.load(source)["server_address"] == "gateway-demo.duckdns.org"
 PYTHON
-grep -Fxq 'obtain:vpn.duckdns.org' "${action_log}" || fail "没有为发布域名申请证书"
-grep -Fxq 'refresh-clash:vpn.duckdns.org' "${action_log}" || fail "没有按发布域名重建 Clash 订阅"
-grep -Fxq 'automation:vpn.duckdns.org' "${action_log}" || fail "没有更新证书自动化"
+grep -Fxq 'obtain:gateway-demo.duckdns.org' "${action_log}" || fail "没有为发布域名申请证书"
+grep -Fxq 'refresh-clash:gateway-demo.duckdns.org' "${action_log}" || fail "没有按发布域名重建 Clash 订阅"
+grep -Fxq 'automation:gateway-demo.duckdns.org' "${action_log}" || fail "没有更新证书自动化"
 audit_public_ip >/dev/null || fail "对账完成后公网 IP 审计仍失败"
 
 update_config_server_address "${FILE_CONFIG_PATH}" "9.9.9.9"

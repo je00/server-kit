@@ -1,209 +1,346 @@
 #!/usr/bin/env python3
-"""仅供本地页面预览使用的管理代理替身。"""
+"""Local-only in-memory agent. Never imports or runs host management commands."""
 
 from __future__ import annotations
 
 import argparse
+import copy
 import json
-import os
 import socket
+import sys
+import threading
 import uuid
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from lib.server_kit_port_ranges import format_ports, parse_ports
+from preview_fixtures import build_fixtures, make_task
 
 
-SNAPSHOT = {
-    "schema_version": 1,
-    "summary": {"running": 7, "stopped": 0, "failed": 0, "missing": 2},
-    "services": [
-        {"id": "amneziawg", "label": "AmneziaWG", "state": "运行中", "autostart": "自启", "detail": "2 个普通节点", "ports": []},
-        {"id": "management", "label": "管理网站", "state": "运行中", "autostart": "自启", "detail": "内网 TCP 9080", "ports": []},
-        {"id": "vless", "label": "Xray / VLESS", "state": "运行中", "autostart": "自启", "detail": "1 个受限节点", "ports": []},
-        {"id": "clash", "label": "Clash 订阅", "state": "运行中", "autostart": "自启", "detail": "3 个发布订阅", "ports": []},
-        {"id": "mosh", "label": "Mosh 终端", "state": "运行中", "autostart": "按需", "detail": "UDP 60001-60010（按需分配）", "ports": []},
-    ],
-}
+class PreviewAgent:
+    """A deliberately separate, fail-closed implementation of the agent protocol."""
 
-CHANGEABLE = {"clash", "file", "mosh"}
-TASKS: dict[str, dict[str, object]] = {}
-PROXY_RESOURCES = {
-    "schema_version": 2,
-    "revision": "a" * 64,
-    "configured": True,
-    "airport_count": 2,
-    "active_airport_count": 1,
-    "airports": [
-        {"id": "111111111111", "name": "主用机场", "host": "primary.example", "enabled": True, "countries": ["hk", "jp", "sg"], "country_labels": ["香港", "日本", "新加坡"]},
-        {"id": "222222222222", "name": "备用机场", "host": "backup.example", "enabled": False, "countries": ["all"], "country_labels": ["全部地区"]},
-    ],
-    "country_options": [
-        {"id": "all", "label": "全部地区"}, {"id": "hk", "label": "香港"},
-        {"id": "tw", "label": "台湾"}, {"id": "jp", "label": "日本"},
-        {"id": "sg", "label": "新加坡"}, {"id": "us", "label": "美国"},
-        {"id": "kr", "label": "韩国"}, {"id": "uk", "label": "英国"},
-    ],
-    "exit": {"configured": True, "type": "socks5", "server": "exit.example", "port": 1080},
-}
+    def __init__(self, scenario: str = "rich") -> None:
+        self.lock = threading.RLock()
+        self.set_scenario(scenario)
+
+    def set_scenario(self, scenario: str) -> None:
+        if scenario not in {"rich", "empty", "error", "pending"}:
+            raise ValueError("Unknown preview scenario")
+        with self.lock:
+            self.scenario = scenario
+            self.data = build_fixtures(scenario)
+            self._permission_batches: dict[str, dict] = {}
+            self._inline_changes: dict[str, dict] = {}
+
+    def dispatch(self, action: str, params: dict) -> dict:
+        with self.lock:
+            return copy.deepcopy(self._dispatch(action, params))
+
+    def _dispatch(self, action: str, params: dict) -> dict:
+        if self.scenario == "error":
+            raise ValueError("模拟管理代理不可用；仅限本地预览。")
+        if action == "host.read":
+            intent = params.get("intent")
+            view = self.describe(params["service_id"]) if intent == "service" else self.data[intent]
+            return {"schema_version": 1, "intent": intent, "fresh_for_ms": 1000,
+                    "components": [intent], "view": view}
+        if action == "system.snapshot":
+            return self.data["overview"]
+        if action == "service.describe":
+            return self.describe(params["service_id"])
+        reads = {"network.public_endpoint.status": "endpoint",
+                 "network.public_endpoint.transaction.status": "endpoint_transaction",
+                 "network.duckdns.status": "duckdns", "network.enrollment.context": "enrollment",
+                 "network.enrollment.overview": "network", "firewall.ports.overview": "firewall_ports",
+                 "ssh.keys.overview": "ssh_keys", "managed.ports.overview": "managed_ports", "audit.list": "audit"}
+        if action in reads:
+            return self.data[reads[action]]
+        if action == "security.transaction":
+            if params.get("operation", "status") not in {"status", "preview"}:
+                raise ValueError("预览代理不执行主机变更。")
+            return self.data["transactions"][params["transaction_type"]]
+        if action == "backup.manage":
+            if params["operation"] == "list":
+                return self.data["backups"]
+            if params["operation"] == "restore_status":
+                return self.data["restore"]
+            raise ValueError("预览代理不读取或写入真实备份。")
+        if action == "network.proxy.test":
+            return {"schema_version": 2, "airports": [
+                {**item, "ok": item["enabled"], "status": "模拟 HTTP 200" if item["enabled"] else "模拟连接超时"}
+                for item in self.data["proxy"]["airports"]],
+                "exits": [{**item, "ok": True, "status": "模拟 TCP 可达"} for item in self.data["proxy"]["exits"]],
+                "exit": {"ok": True, "status": "模拟 TCP 可达"}, "all_ok": False}
+        if action == "task.list":
+            return {"items": list(self.data["tasks"].values())}
+        if action == "task.get":
+            return self.data["tasks"][params["task_id"]]
+        if action == "task.preview":
+            # Do not echo passwords, keys, URLs or arbitrary request payloads.
+            allowed = {"service.change", "file.resource.change", "network.duckdns.change",
+                       "network.public_endpoint.change", "network.node.change", "network.node.domains",
+                       "network.address.domains", "network.node.import", "network.permission.change",
+                       "network.permission.batch",
+                       "network.subscriptions.sync", "network.subscription.rotate", "network.subscription.state",
+                       "network.proxy.update", "deployment.install", "security.transaction.change",
+                       "managed.port.change", "firewall.port.change", "ssh.key.change", "backup.manage",
+                       "backup.restore.change"}
+            if params.get("action") not in allowed:
+                raise ValueError("动作未登记；不会转发到真实管理代理。")
+            task = make_task("waiting_confirmation", "task-" + uuid.uuid4().hex)
+            task["action"] = params["action"]
+            task["actor"] = "preview"
+            inline = self.prepare_inline_change(params["action"], params.get("arguments", {}))
+            if inline is not None:
+                task["action"] = inline["action"]
+                task["actor"] = params.get("actor", "preview")
+                task["preview"] = {"title": inline["title"], "summary": "仅在本地合成数据中模拟，不连接真实服务。", "facts": inline["facts"]}
+                self._inline_changes[task["id"]] = inline
+            if params["action"] == "network.permission.batch":
+                batch = self.prepare_permission_batch(params.get("arguments"))
+                actor = params.get("actor")
+                if not isinstance(actor, str) or not actor:
+                    raise ValueError("批量预览需要当前操作者。")
+                task["actor"] = actor
+                task["preview"] = {
+                    "title": f"新增 {len(batch['rules'])} 条访问权限",
+                    "summary": "仅在本地内存中模拟追加；现有权限和管理连接保持不变。",
+                    "facts": {"来源节点": batch["client"], "规则数量": len(batch["rules"]),
+                              **{f"规则 {index}": f"{rule['target_label']} · {rule['network_label']} · {rule['ports_label']}"
+                                 for index, rule in enumerate(batch["rules"], 1)}},
+                    "stages": ["核验全部规则", "统一追加权限", "更新本页权限列表"],
+                }
+                # Store only normalized, allow-listed data, outside every read response.
+                self._permission_batches[task["id"]] = batch
+            self.data["tasks"][task["id"]] = task
+            return task
+        if action in {"task.confirm", "task.cancel"}:
+            task = self.data["tasks"][params["task_id"]]
+            if task.get("terminal"):
+                return task
+            batch = self._permission_batches.get(task["id"])
+            inline = self._inline_changes.get(task["id"])
+            if (batch or inline) and params.get("actor") != task["actor"]:
+                raise ValueError("操作者与批量预览不匹配。")
+            state = "succeeded" if action == "task.confirm" else "cancelled"
+            if batch and action == "task.confirm":
+                # In-memory simulation only. Recheck every rule before appending any.
+                checked = self.prepare_permission_batch({"client": batch["client"], "rules": [
+                    {"target": rule["target"], "network": rule["network"],
+                     "ports": format_ports(rule["ports"])} for rule in batch["rules"]]})
+                node = next(node for node in self.data["network"]["nodes"] if node["name"] == checked["client"])
+                node["permissions"].extend(copy.deepcopy(checked["rules"]))
+            if inline and action == "task.confirm":
+                self.apply_inline_change(inline)
+            transition = make_task(state, task["id"])
+            task.update({key: value for key, value in transition.items()
+                         if key not in {"action", "actor", "preview", "created_at"}})
+            if batch:
+                task["result"] = {"client": batch["client"], "added_count": len(batch["rules"])} if state == "succeeded" else {}
+                self._permission_batches.pop(task["id"], None)
+            if inline:
+                task["result"] = {"preview_only": True}
+                self._inline_changes.pop(task["id"], None)
+            return task
+        if action == "audit.event":
+            return {"recorded": True, "preview_only": True}
+        if action == "service.reveal":
+            return {"schema_version": 1, "resource": params.get("resource", ""),
+                    "item_id": params.get("item_id", ""), "name": "仅供预览的合成资源",
+                    "value": "https://downloads.example/preview-only/resource.yaml",
+                    "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9nEAAAAASUVORK5CYII="}
+        raise ValueError("动作未登记；不会转发到真实管理代理。")
+
+    def describe(self, service_id: str) -> dict:
+        return self.data["descriptions"][service_id]
+
+    def prepare_inline_change(self, action: str, arguments: dict) -> dict | None:
+        """Allow-list non-secret synthetic mutations for same-page editor QA."""
+        if not isinstance(arguments, dict):
+            return None
+        change = {"action": action, "title": "预览合成数据变更", "facts": {}}
+        if action == "network.node.domains":
+            name = arguments.get("name")
+            if not any(node["name"] == name for node in self.data["network"]["nodes"]):
+                raise ValueError("模拟节点不存在。")
+            domains = arguments.get("domains", [])
+            if not isinstance(domains, list) or any(not isinstance(domain, str) for domain in domains):
+                raise ValueError("模拟域名格式无效。")
+            return {**change, "name": name, "domains": domains[:32], "title": "更新节点域名映射",
+                    "facts": {"节点": name, "域名": ", ".join(domains) or "清空"}}
+        if action == "network.address.domains":
+            import ipaddress
+            address = str(ipaddress.ip_address(arguments.get("address", "")))
+            domains = arguments.get("domains", [])
+            if not isinstance(domains, list) or any(not isinstance(domain, str) for domain in domains):
+                raise ValueError("模拟域名格式无效。")
+            return {**change, "address": address, "domains": domains[:32], "title": "更新自定义 IP 映射",
+                    "facts": {"地址": address, "域名": ", ".join(domains) or "删除"}}
+        if action == "network.permission.change" and arguments.get("operation") == "deny":
+            client, target, network = (arguments.get(key) for key in ("client", "target", "network"))
+            subject = next((node for node in self.data["network"]["nodes"] if node["name"] == client), None)
+            ports = parse_ports(arguments["ports"]) if network != "all" else []
+            if not subject or not any(rule["target"] == target and rule["network"] == network and rule["ports"] == ports for rule in subject["permissions"]):
+                raise ValueError("模拟权限不存在。")
+            if subject["protected"] and target == "all":
+                raise ValueError("本地预览保留受保护管理入口。")
+            return {**change, "action": "network.permission.deny", "client": client, "target": target,
+                    "network": network, "ports": ports, "title": "删除单条访问权限",
+                    "facts": {"来源节点": client, "目标": target, "协议": network, "端口": format_ports(ports) or "全部端口"}}
+        if action != "network.proxy.update":
+            return None
+        operation = arguments.get("operation")
+        if operation == "node_exits_set":
+            name, ids = arguments.get("awg_name"), arguments.get("exit_ids", [])
+            known = {item["id"]: item["name"] for item in self.data["proxy"]["exits"]}
+            if not isinstance(ids, list) or any(value not in known for value in ids):
+                raise ValueError("模拟出口不存在。")
+            if not any(node["name"] == name for node in self.data["network"]["nodes"]):
+                raise ValueError("模拟节点不存在。")
+            return {**change, "operation": operation, "name": name, "exit_ids": ids,
+                    "title": "更新节点出口选择", "facts": {"节点": name, "出口": ", ".join(known[value] for value in ids) or "VPS MID"}}
+        if operation not in {"airport_add", "airport_update", "airport_delete", "exit_add", "exit_update", "exit_delete", "exit_set_default"}:
+            return None
+        airport = operation.startswith("airport_")
+        kind = "airport" if airport else "exit"
+        items = self.data["proxy"]["airports" if airport else "exits"]
+        item_id = arguments.get(kind + "_id") or uuid.uuid4().hex[:12]
+        item = next((item for item in items if item["id"] == item_id), None)
+        if operation not in {"airport_add", "exit_add"} and item is None:
+            raise ValueError("模拟代理资源不存在。")
+        name = arguments.get(kind + "_name") or (item["name"] if item else "preview-resource")
+        # Never retain airport_url, YAML, proxy credentials, passwords or arbitrary fields.
+        change.update(operation=operation, item_id=item_id, name=name,
+                      title="更新模拟代理资源", facts={"资源": name, "操作": operation})
+        if airport:
+            known = {item["id"] for item in self.data["proxy"]["country_options"]}
+            countries = arguments.get("countries", [])
+            if not isinstance(countries, list) or any(value not in known for value in countries):
+                raise ValueError("模拟地区无效。")
+            change.update(countries=countries, enabled=bool(arguments.get("airport_enabled")))
+        else:
+            change["default"] = bool(arguments.get("exit_default"))
+        return change
+
+    def apply_inline_change(self, change: dict) -> None:
+        """Apply only to fixture dictionaries. No files, commands or network I/O."""
+        action = change["action"]
+        network = self.data["network"]
+        if action == "network.node.domains":
+            next(node for node in network["nodes"] if node["name"] == change["name"])["domains"] = list(change["domains"])
+        elif action == "network.address.domains":
+            network["host_records"] = [item for item in network["host_records"] if item["address"] != change["address"]]
+            if change["domains"]:
+                network["host_records"].append({"address": change["address"], "domains": list(change["domains"])})
+        elif action == "network.permission.deny":
+            node = next(node for node in network["nodes"] if node["name"] == change["client"])
+            node["permissions"] = [rule for rule in node["permissions"] if not all(rule[key] == change[key] for key in ("target", "network", "ports"))]
+        elif change.get("operation") == "node_exits_set":
+            node = next(node for node in network["nodes"] if node["name"] == change["name"])
+            node["exit_ids"] = list(change["exit_ids"])
+            node["exit_names"] = [item["name"] for item in self.data["proxy"]["exits"] if item["id"] in change["exit_ids"]]
+        else:
+            proxy = self.data["proxy"]
+            airport = change["operation"].startswith("airport_")
+            key = "airports" if airport else "exits"
+            item = next((item for item in proxy[key] if item["id"] == change["item_id"]), None)
+            if change["operation"].endswith("_delete"):
+                proxy[key] = [item for item in proxy[key] if item["id"] != change["item_id"]]
+            else:
+                if item is None:
+                    item = {"id": change["item_id"], "host": "preview-airport.example"} if airport else {
+                        "id": change["item_id"], "server": "preview-exit.example", "type": "socks5", "port": 1080, "default": False}
+                    proxy[key].append(item)
+                item["name"] = change["name"]
+                if airport:
+                    labels = {item["id"]: item["label"] for item in proxy["country_options"]}
+                    item.update(enabled=change["enabled"], countries=list(change["countries"]),
+                                country_labels=[labels[value] for value in change["countries"]])
+                elif change["default"] or change["operation"] == "exit_set_default":
+                    for option in proxy["exits"]:
+                        option["default"] = option["id"] == item["id"]
+            proxy.update(airport_count=len(proxy["airports"]), active_airport_count=sum(item["enabled"] for item in proxy["airports"]), exit_count=len(proxy["exits"]))
+            network["exit_options"] = copy.deepcopy(proxy["exits"])
+
+    def prepare_permission_batch(self, arguments: dict | None) -> dict:
+        """Validate synthetic permissions without invoking any production manager."""
+        if not isinstance(arguments, dict):
+            raise ValueError("批量权限参数无效。")
+        client, rules = arguments.get("client"), arguments.get("rules")
+        nodes = self.data["network"]["nodes"]
+        subject = next((node for node in nodes if node["name"] == client), None)
+        if subject is None or subject["state"] != "已启用":
+            raise ValueError("只有已启用节点可以添加权限。")
+        if not isinstance(rules, list) or not 1 <= len(rules) <= 20:
+            raise ValueError("请添加 1–20 条规则。")
+        targets = {item["name"]: item["label"] for item in self.data["network"]["targets"]}
+        node_ips = {node["name"]: node["address"] for node in nodes}
+        node_ips.update(vps="10.20.0.1", all="")
+        seen = {(item["target"], item["network"], tuple(item["ports"])) for item in subject["permissions"]}
+        prepared = []
+        for rule in rules:
+            if not isinstance(rule, dict):
+                raise ValueError("批量权限规则无效。")
+            target, network, spec = rule.get("target"), rule.get("network"), rule.get("ports", "")
+            if not isinstance(target, str) or target not in targets or target == client:
+                raise ValueError("访问目标不存在或不能选择节点自身。")
+            if not isinstance(network, str) or network not in {"all", "tcp", "udp"} or not isinstance(spec, str):
+                raise ValueError("权限协议或端口无效。")
+            if network == "all" and spec:
+                raise ValueError("全部协议权限不接受端口列表。")
+            ports = [] if network == "all" else parse_ports(spec)
+            signature = (target, network, tuple(ports))
+            if signature in seen:
+                raise ValueError("相同的访问权限已经存在或在草稿中重复。")
+            seen.add(signature)
+            prepared.append({"target": target, "target_label": "全部节点" if target == "all" else "VPS 本机" if target == "vps" else target,
+                             "ip": node_ips.get(target, ""), "network": network,
+                             "network_label": "全部协议" if network == "all" else network.upper(),
+                             "ports": ports, "ports_label": format_ports(ports, ", ") if ports else "全部端口"})
+        return {"client": client, "rules": prepared}
 
 
-def describe(service_id: str) -> dict[str, object]:
-    service = next((item for item in SNAPSHOT["services"] if item["id"] == service_id), None)
-    if service is None:
-        raise KeyError(service_id)
-    operations: list[str] = []
-    restriction = ""
-    if service["state"] == "未安装":
-        restriction = "服务尚未安装，请使用后续安装向导。"
-    elif service_id in CHANGEABLE:
-        operations = ["stop", "restart"] if service["state"] == "运行中" else ["start"]
-    else:
-        restriction = "此服务在当前阶段保持只读。"
-    return {
-        "service": service,
-        "allowed_operations": operations,
-        "restriction": restriction,
-    }
-
-
-def serve(socket_path: str) -> None:
-    try:
-        os.unlink(socket_path)
-    except FileNotFoundError:
-        pass
+def serve(socket_path: str, agent: PreviewAgent | None = None,
+          ready: threading.Event | None = None) -> None:
+    """Bind a new socket only; never unlink or replace an existing agent socket."""
+    socket_file = Path(socket_path)
+    if not socket_file.is_absolute() or socket_file.exists() or socket_file.is_symlink():
+        raise ValueError("Preview requires a new absolute socket path")
+    agent = agent or PreviewAgent()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
         listener.bind(socket_path)
-        listener.listen(4)
+        socket_file.chmod(0o600)
+        listener.listen(8)
+        if ready:
+            ready.set()
         while True:
             connection, _ = listener.accept()
             with connection:
-                request = json.loads(connection.makefile("rb").readline().decode("utf-8"))
+                connection.settimeout(3)
+                request = {}
                 try:
-                    if request["action"] == "system.snapshot":
-                        result = SNAPSHOT
-                    elif request["action"] == "host.read" and request["params"].get("intent") == "proxy":
-                        result = {"schema_version": 1, "intent": "proxy", "fresh_for_ms": 1000, "components": ["proxy"], "view": PROXY_RESOURCES}
-                    elif request["action"] == "network.proxy.test":
-                        result = {
-                            "schema_version": 2,
-                            "airports": [
-                                {"id": item["id"], "name": item["name"], "enabled": item["enabled"], "ok": item["enabled"], "status": "HTTP 200" if item["enabled"] else "连接失败"}
-                                for item in PROXY_RESOURCES["airports"]
-                            ],
-                            "exit": {"ok": True, "status": "TCP 可达"},
-                            "all_ok": True,
-                        }
-                    elif request["action"] == "service.describe":
-                        result = describe(request["params"]["service_id"])
-                    elif request["action"] == "service.change":
-                        details = describe(request["params"]["service_id"])
-                        operation = request["params"]["operation"]
-                        if operation not in details["allowed_operations"]:
-                            raise ValueError("操作不允许")
-                        details["service"]["state"] = "已停止" if operation == "stop" else "运行中"
-                        result = {"service": details["service"], "operation": operation}
-                    elif request["action"] == "task.preview":
-                        arguments = request["params"]["arguments"]
-                        task_id = f"task-{uuid.uuid4().hex}"
-                        if request["params"].get("action") == "network.proxy.update":
-                            operation = arguments["operation"]
-                            title = {
-                                "airport_add": "新增机场", "airport_update": "更新机场",
-                                "airport_delete": "删除机场", "exit_update": "更新出口节点",
-                            }[operation]
-                            facts = {"动作": title, "发布订阅": "全部刷新"}
-                            action = "network.proxy.update"
-                        else:
-                            details = describe(arguments["service_id"])
-                            operation = arguments["operation"]
-                            if operation not in details["allowed_operations"]:
-                                raise ValueError("操作不允许")
-                            target = "已停止" if operation == "stop" else "运行中"
-                            operation_label = {"start": "启动", "stop": "停止", "restart": "重启"}[operation]
-                            title = f"{operation_label} {details['service']['label']}"
-                            facts = {"当前状态": details["service"]["state"], "目标状态": target}
-                            action = f"service.{operation}"
-                        result = {
-                            "id": task_id,
-                            "action": action,
-                            "actor": request["params"]["actor"],
-                            "state": "waiting_confirmation",
-                            "state_label": "待确认",
-                            "terminal": False,
-                            "preview": {
-                                "title": title,
-                                "summary": "任务将在后台执行；关闭页面不会中断操作。",
-                                "facts": facts,
-                            },
-                            "progress": {"message": "影响预览已生成，等待确认。"},
-                            "result": {},
-                            "transitions": [],
-                            "created_at": "2026-08-08T00:00:00.000Z",
-                        }
-                        TASKS[task_id] = result
-                    elif request["action"] == "task.confirm":
-                        result = TASKS[request["params"]["task_id"]]
-                        result["state"] = "succeeded"
-                        result["state_label"] = "成功"
-                        result["terminal"] = True
-                        result["progress"] = {"message": "任务执行并核验成功。"}
-                        result["transitions"] = [
-                            {"to_state": "succeeded", "message": "任务执行并核验成功。", "occurred_at": "2026-08-08T00:00:01.000Z"}
-                        ]
-                    elif request["action"] == "task.get":
-                        result = TASKS[request["params"]["task_id"]]
-                    elif request["action"] == "task.list":
-                        result = {"items": list(TASKS.values())}
-                    elif request["action"] == "service.reveal":
-                        if request["params"].get("service_id") != "clash":
-                            raise ValueError("敏感资源不允许")
-                        item_id = request["params"]["item_id"]
-                        if request["params"]["resource"] == "subscription_link":
-                            result = {"schema_version": 1, "resource": "clash_subscription_link", "item_id": item_id, "name": item_id, "value": "https://203.0.113.10:52541/preview-token/clash.yaml"}
-                        elif request["params"]["resource"] == "airport_link":
-                            result = {"schema_version": 1, "resource": "proxy_airport_link", "item_id": item_id, "name": "主用机场", "value": "https://primary.example/sub?token=preview"}
-                        elif request["params"]["resource"] == "exit_config":
-                            result = {"schema_version": 1, "resource": "proxy_exit_config", "item_id": item_id, "name": "当前出口节点", "value": "type: socks5\nserver: exit.example\nport: 1080\n"}
-                        else:
-                            result = {"schema_version": 1, "resource": "clash_subscription_qr", "item_id": item_id, "name": item_id, "image_base64": "iVBORw0KGgo="}
-                    elif request["action"] == "security.transaction":
-                        transaction_type = request["params"]["transaction_type"]
-                        result = {
-                            "schema_version": 1,
-                            "transaction_type": transaction_type,
-                            "title": "SSH 仅公钥认证" if transaction_type == "ssh_auth" else "nftables 主机防火墙",
-                            "state": "idle",
-                            "expires_at": "",
-                            "remaining_seconds": 0,
-                            "writes_enabled": False,
-                            "ready": True,
-                            "blockers": [],
-                            "rollback_seconds": 300,
-                            "changes": [],
-                            "verifications": [],
-                        }
-                    else:
-                        raise ValueError("动作未登记")
-                    response = {
-                        "version": 1,
-                        "request_id": request["request_id"],
-                        "ok": True,
-                        "result": result,
-                    }
-                except (KeyError, ValueError):
-                    response = {
-                        "version": 1,
-                        "request_id": request.get("request_id", "invalid-request"),
-                        "ok": False,
-                        "error": {"code": "invalid_request", "message": "预览请求无效。"},
-                    }
-                connection.sendall(
-                    json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
-                )
+                    line = connection.makefile("rb").readline(1024 * 1024)
+                    request = json.loads(line.decode("utf-8"))
+                    result = agent.dispatch(request["action"], request.get("params", {}))
+                    response = {"version": 1, "request_id": request["request_id"], "ok": True, "result": result}
+                except (KeyError, TypeError, ValueError, OSError):
+                    response = {"version": 1, "request_id": request.get("request_id", "invalid-request"),
+                                "ok": False, "error": {"code": "preview_unavailable",
+                                "message": "本地演示：请求不可用，未访问真实服务器。"}}
+                try:
+                    connection.sendall(json.dumps(response, ensure_ascii=False).encode() + b"\n")
+                except OSError:
+                    pass
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("socket_path")
+    parser.add_argument("--scenario", choices=("rich", "empty", "error", "pending"), default="rich")
     args = parser.parse_args()
-    serve(args.socket_path)
+    serve(args.socket_path, PreviewAgent(args.scenario))
     return 0
 
 

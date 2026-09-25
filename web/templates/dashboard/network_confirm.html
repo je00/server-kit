@@ -3,7 +3,7 @@
 {% block title %}确认网络变更 · server-kit{% endblock %}
 
 {% block body %}
-<div class="app-shell">{% include "dashboard/_navigation.html" %}<main class="content confirm-content">
+<div class="app-shell">{% include "dashboard/_navigation.html" %}<main id="main-content" tabindex="-1" class="content confirm-content">
   <a class="back-link" href="{% url 'network-nodes' %}">← 取消并返回内网节点</a>
   <section class="confirm-card"><span class="stage-badge">二次确认</span><p class="eyebrow">网络变更</p><h1>确认{{ operation_label }}</h1>
     {% if target_type == 'node' %}<p class="muted">节点变更会立即作用于 AWG 或 Xray；新增节点会在同一任务中自动发布订阅。操作结果会写入审计链。</p><dl class="impact-list"><div><dt>节点</dt><dd>{{ name }}</dd></div><div><dt>类型</dt><dd>{{ kind_label }}</dd></div><div><dt>操作</dt><dd>{{ operation_label }}</dd></div>{% if address %}<div><dt>虚拟 IP</dt><dd>{{ address }}</dd></div>{% endif %}</dl>

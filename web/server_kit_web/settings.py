@@ -34,8 +34,11 @@ ALLOWED_HOSTS = [
     for item in os.environ.get("SERVER_KIT_ALLOWED_HOSTS", "10.20.0.1").split(",")
     if item.strip()
 ]
+# SSH local forwarding preserves the browser's loopback Host header. Allow the
+# documented first-login path without changing the AWG-only listening address.
+ALLOWED_HOSTS = list(dict.fromkeys([*ALLOWED_HOSTS, "127.0.0.1", "localhost"]))
 if TESTING:
-    ALLOWED_HOSTS.extend(["testserver", "localhost", "127.0.0.1"])
+    ALLOWED_HOSTS.append("testserver")
 
 INSTALLED_APPS = [
     "django.contrib.auth",

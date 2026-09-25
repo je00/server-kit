@@ -45,12 +45,12 @@ VLESS_SKIP_SSH_GATE=1
 XRAY_BIN="${test_dir}/xray-bin"
 
 mkdir -p "${CONFIG_DIR}" "${SERVER_KIT_DIR}" "$(dirname "${AWG_PEER_DB}")"
-printf 'lab-node\t10.20.0.201\n' > "${AWG_PEER_DB}"
+printf 'apie-p15v\t10.20.0.201\n' > "${AWG_PEER_DB}"
 printf 'AWG_SERVER_IP=10.20.0.1\n' > "${AWG_STATE_FILE}"
 cat > "${NODE_DOMAINS_PATH}" <<'JSON'
 {
   "version": 1,
-  "nodes": {"lab-node": ["*.internal.example", "git.example.com"]}
+  "nodes": {"apie-p15v": ["*.internal.example", "git.example.com"]}
 }
 JSON
 cat > "${CONFIG_PATH}" <<'JSON'
@@ -107,7 +107,7 @@ systemctl() {
 
 vless_access_helper client-add home-iphone --uuid 22222222-2222-4222-8222-222222222222 >/dev/null
 vless_access_helper allow home-iphone vps 22 tcp >/dev/null
-vless_access_helper allow home-iphone lab-node 22 tcp >/dev/null
+vless_access_helper allow home-iphone apie-p15v 22 tcp >/dev/null
 apply_vless_access >/dev/null
 
 [[ -r "${VLESS_ACCESS_PATH}" && ! -e "${VLESS_ACCESS_PENDING_PATH}" ]] || {
@@ -138,11 +138,11 @@ assert rules[2]["outboundTag"] == "block"
 assert "ip" not in rules[3]
 PYTHON
 
-vless_access_helper allow home-iphone lab-node 443 tcp >/dev/null
+vless_access_helper allow home-iphone apie-p15v 443 tcp >/dev/null
 apply_vless_access >/dev/null
 require_root() { return 0; }
 check_debian() { return 0; }
-main deny home-iphone lab-node 22 tcp >/dev/null
+main deny home-iphone apie-p15v 22 tcp >/dev/null
 python3 - "${VLESS_ACCESS_PENDING_PATH}" <<'PYTHON'
 import json
 import sys
@@ -151,21 +151,21 @@ with open(sys.argv[1], encoding="utf-8") as source:
     policy = json.load(source)
 rules = [
     item for item in policy["clients"]["home-iphone"]["allow"]
-    if item.get("target") == "lab-node"
+    if item.get("target") == "apie-p15v"
 ]
 assert rules == [{
-    "target": "lab-node", "ip": "10.20.0.201",
+    "target": "apie-p15v", "ip": "10.20.0.201",
     "ports": [443], "network": "tcp",
 }]
 PYTHON
 apply_vless_access >/dev/null
-vless_access_helper deny home-iphone lab-node >/dev/null
+vless_access_helper deny home-iphone apie-p15v >/dev/null
 apply_vless_access >/dev/null
 
 cat > "${NODE_DOMAINS_PATH}" <<'JSON'
 {
   "version": 1,
-  "nodes": {"lab-node": ["code.example.com"]}
+  "nodes": {"apie-p15v": ["code.example.com"]}
 }
 JSON
 refresh_vless_domains >/dev/null

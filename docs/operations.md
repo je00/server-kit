@@ -1,8 +1,8 @@
 # 运维指南
 
-[返回 README](../README.md)
+[返回快速部署](../README.md)
 
-以下为高级操作参考；首次安装请先按 README 完成部署。
+高级操作参考；首次安装请先完成 README。下文默认从仓库目录运行源码命令。
 
 本仓库包含 AmneziaWG、文件订阅、VLESS、Git、Mosh、安全和防火墙管理脚本。
 
@@ -21,7 +21,7 @@ server-kit preflight
 server-kit init
 ```
 
-初始化只建立 AWG 管理入口和内网管理网站，不修改 SSH，也不应用或重写主机防火墙。
+初始化建立 AWG 管理入口和内网管理网站，不修改 SSH 或应用 server-kit 的主机入口防火墙策略；AWG 安装会启用转发及自身所需的网络规则。
 详细安全模型和分阶段范围见 [管理平面设计](management-plane-design.md)。
 
 更新已经初始化的管理网站：
@@ -189,7 +189,7 @@ bash debian_file_manager.sh install-clash
 
 每个 AWG/VLESS 节点可在“内网节点 → 配置”独立启用订阅纯净模式。普通订阅把 `MID` 分组排在所有机场分组之前；纯净订阅会完整移除机场 Provider 和机场分组，并从 `PROXY` 隐藏 `MID` 及其链式出口，但保留 `MID` 分组用于查看 443/2053 延迟。该开关只刷新订阅，不重启 AWG 或 Xray，也不改变节点权限；默认关闭以兼容已有节点。
 
-客户端支持 VLESS REALITY、但不支持 `dialer-proxy` 时，可在现有 443/2053 入站启用服务端 VLESS 转发。每个“订阅 × 出口”组合都会获得独立 UUID，并生成 ASCII 节点名 `SERVER.RELAY.VLESS.<EXIT_ID>.443` 与 `.2053`，由唯一的 `SERVER.RELAY.VLESS` fallback 组直接引用；VLESS 客户端订阅发布全部出口，AWG 订阅只发布该节点选中的出口。`PROXY` 把该组放在成员第一项作为默认首选，不再生成额外的 DNS 中转组。VPS 按身份把流量固定路由到对应 SOCKS5 出口，私网目标会在 VPS 上拒绝。普通境外 DNS 跟随当前 `PROXY`，国内和直连 DNS 使用国内 IP DoH；代理节点、Provider 和规则资源的启动解析与下载直接经过 `SERVER.RELAY.VLESS`。Mihomo 的空 Provider 显式回退到第一条 443 实际节点；旧 Stash 则在 Provider 组内加入同一节点，避免静默变为 `DIRECT`。所有订阅均把 `PROXY` 放在策略组第一项，降低误选内部组的概率。该模式不增加公网端口：
+客户端支持 VLESS REALITY、但不支持 `dialer-proxy` 时，可在现有 443/2053 入站启用服务端 VLESS 转发。每个“订阅 × 出口”组合都会获得独立 UUID，并生成 ASCII 节点名 `SERVER.RELAY.VLESS.<EXIT_ID>.443` 与 `.2053`，由唯一的 `SERVER.RELAY.VLESS` fallback 组直接引用；VLESS 客户端订阅发布全部出口，AWG 订阅只发布该节点选中的出口。`PROXY` 把该组放在成员第一项作为默认首选，不再生成额外的 DNS 中转组。VPS 按身份把流量固定路由到对应 SOCKS5 出口，私网目标会在 VPS 上拒绝。普通境外 DNS 跟随当前 `PROXY`，国内和直连 DNS 使用国内 IP DoH；节点启动解析及机场分组的客户端兼容策略见 [Stash 3.4.1 说明](stash-3.4.md)，不要将业务 DNS 与节点入口解析混为一谈。现代 Stash VLESS 订阅的空机场组使用 `REJECT`，不会静默回退直连；AWG 与旧兼容投影按各自策略生成。所有订阅均把 `PROXY` 放在策略组第一项，降低误选内部组的概率。该模式不增加公网端口：
 
 ```bash
 debian_vless_manager.sh relay-vless-enable
@@ -202,8 +202,8 @@ debian_vless_manager.sh relay-vless-enable
 出口一致 DNS 可按出口启用，适用于代理供应商的域名解析位置与业务出口不一致的情况。需要支持出站 `targetStrategy: ForceIPv4` 的 Xray（已验证 26.3.27）和已启用的 VLESS 服务端转发：
 
 ```bash
-# 参数是 clash-inputs.json 中的出口 ID；列出所有要启用该模式的出口。
-debian_vless_manager.sh relay-dns 111111111111 222222222222
+# 将 EXIT_ID 替换为 clash-inputs.json 中的出口 ID；可列出多个 ID。
+debian_vless_manager.sh relay-dns EXIT_ID
 debian_file_manager.sh refresh-clash
 # 不带出口 ID 关闭该模式；随后同样刷新订阅。
 debian_vless_manager.sh relay-dns
@@ -214,13 +214,3 @@ debian_vless_manager.sh relay-dns
 `relay-dns` 先校验并启动 worker，经带域名的真实 TLS/HTTP 请求验证后才切换主 Xray；失败时恢复 worker 和主配置。worker 使用 `server-kit-exit-dns@<ID>.service`，配置在 `/etc/server-kit/exit-dns/`，随开机启动并自动重启。部署不修改 AWG、SSH、防火墙或默认路由；主 Xray 切换可能短暂重建公网代理连接。未启用该模式的出口保持原行为。
 
 刷新订阅后，启用模式的 `EXIT.*` 节点也改用同身份的 VLESS 服务端入口；旧 Stash 继续使用其服务端中转组。已导入的客户端需要更新订阅，旧的直接 SOCKS 节点不会自动获得此保护。该模式保证解析请求经过同一出口，不能保证第三方 GeoIP 数据库永远标注同一城市，也不改变供应商限制的目标网站。
-
-## 代码仓库
-
-server-kit 不内置 bare 仓库、Git 专用账号或公钥管理。公开源码仓库为：
-
-```bash
-git@github.com:je00/server-kit.git
-```
-
-公开版本不包含原部署的 Git 历史、内部工作笔记、运行时配置或凭据。文档和测试中的示例域名及地址需要替换为自己的配置；不要提交生成的订阅、密钥或备份文件。

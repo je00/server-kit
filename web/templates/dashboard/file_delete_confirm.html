@@ -1,3 +1,20 @@
 {% extends "base.html" %}
 {% block title %}确认删除文件 · server-kit{% endblock %}
-{% block body %}<div class="app-shell">{% include "dashboard/_navigation.html" %}<main class="content detail-content"><a class="back-link" href="{% url 'file-resources' %}">← 返回文件资源</a><section class="confirm-card"><p class="eyebrow">删除确认</p><h1>删除 {{ item.name }}</h1><div class="alert danger">源站文件和访问链接会立即失效。第三方 CDN 已缓存副本仍可能保留到缓存到期。</div><dl class="fact-grid"><div><dt>文件大小</dt><dd>{{ item.size_label }}</dd></div><div><dt>CDN 缓存</dt><dd>{% if item.cdn_cache %}最多 {{ item.cache_label }}{% else %}未启用{% endif %}</dd></div></dl><form method="post" action="{% url 'file-resource-delete-execute' item.resource_id %}">{% csrf_token %}<input type="hidden" name="nonce" value="{{ nonce }}"><input type="hidden" name="confirmed" value="yes"><label>当前账号密码<input type="password" name="password" required autocomplete="current-password"></label><div class="action-row"><button class="action-button danger-button" type="submit">确认删除</button><a class="secondary-button" href="{% url 'file-resources' %}">取消</a></div></form></section></main></div>{% endblock %}
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main id="main-content" tabindex="-1" class="content confirm-content">
+    <a class="back-link" href="{% url 'file-resources' %}">← 返回文件资源</a>
+    <section class="confirm-card">
+      <p class="eyebrow">删除确认</p><h1>删除 {{ item.name }}</h1>
+      <div class="alert danger">源站文件和访问链接会立即失效。第三方 CDN 已缓存副本仍可能保留到缓存到期。</div>
+      <dl class="fact-grid"><div><dt>文件大小</dt><dd>{{ item.size_label }}</dd></div><div><dt>CDN 缓存</dt><dd>{% if item.cdn_cache %}最多 {{ item.cache_label }}{% else %}未启用{% endif %}</dd></div></dl>
+      <form class="stack-form" method="post" action="{% url 'file-resource-delete-execute' item.resource_id %}">
+        {% csrf_token %}<input type="hidden" name="nonce" value="{{ nonce }}"><input type="hidden" name="confirmed" value="yes">
+        <label>当前账号密码<input type="password" name="password" required autocomplete="current-password"></label>
+        <div class="confirm-actions"><a class="secondary-button" href="{% url 'file-resources' %}">取消</a><button class="action-button danger-button" type="submit">确认删除</button></div>
+      </form>
+    </section>
+  </main>
+</div>
+{% endblock %}

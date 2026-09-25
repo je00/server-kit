@@ -41,6 +41,7 @@ EXPECTED_PROTOCOL_ACTIONS = frozenset({
     "network.public_endpoint.transaction.status",
     "network.public_endpoint.change",
     "network.permission.change",
+    "network.permission.batch",
     "network.proxy.overview",
     "network.proxy.test",
     "network.proxy.update",
@@ -65,6 +66,7 @@ EXPECTED_PROTOCOL_ACTIONS = frozenset({
 })
 
 EXPECTED_CHANGE_ACTIONS = frozenset({
+    "network.permission.batch",
     "backup.create",
     "backup.delete",
     "backup.restore_apply",

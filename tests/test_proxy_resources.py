@@ -141,12 +141,12 @@ class ProxyResourceTests(unittest.TestCase):
             path = Path(directory) / "clash-inputs.json"
             self.bootstrap(path)
             update(path, {
-                "operation": "exit_add", "exit_id": "", "exit_name": "example-us",
+                "operation": "exit_add", "exit_id": "", "exit_name": "egress-us",
                 "exit_default": False, "exit_proxy_yaml": EXIT_YAML.replace("1080", "1081"),
             })
             self.assertEqual(
                 normalized_config(path)["exits"][1]["proxy"]["name"],
-                "EXIT.example.us",
+                "EXIT.egress.us",
             )
             with self.assertRaisesRegex(ProxyResourceError, "英文字母或数字"):
                 update(path, {
@@ -155,7 +155,7 @@ class ProxyResourceTests(unittest.TestCase):
                 })
             with self.assertRaisesRegex(ProxyResourceError, "重复的发布名称"):
                 update(path, {
-                    "operation": "exit_add", "exit_id": "", "exit_name": "example us",
+                    "operation": "exit_add", "exit_id": "", "exit_name": "egress us",
                     "exit_default": False, "exit_proxy_yaml": EXIT_YAML,
                 })
 

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}任务暂时无法读取 · server-kit{% endblock %}
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main class="content detail-content" id="main-content" tabindex="-1">
+    {% if task_origin %}<a class="back-link" href="{{ task_origin.url }}">← 返回{{ task_origin.label }}</a>{% else %}<a class="back-link" href="{% url 'task-audit' %}">← 返回任务与审计</a>{% endif %}
+    <header class="page-header"><div><p class="eyebrow">TASK STATUS</p><h1>暂时无法读取任务</h1><p class="muted">管理代理暂未响应。这不代表任务失败，也不会取消后台任务。</p></div><span class="stage-badge">连接暂不可用</span></header>
+    <section class="inventory-panel"><h2>请稍后重试</h2><p class="muted">重试只会读取任务状态，不会再次执行操作。请勿重复提交原变更。</p><div class="action-row"><a class="action-button" href="{% url 'change-task-detail' task_id %}">重新读取状态</a><a class="secondary-button" href="{% url 'task-audit' %}">查看任务列表</a></div></section>
+  </main>
+</div>
+{% endblock %}

@@ -663,9 +663,10 @@ h2 { margin-bottom: 0; font-size: 1.25rem; }
   .mobile-nav { position: fixed; inset: auto .75rem .75rem; z-index: 10; display: flex; align-items: center; overflow-x: auto; padding: .45rem; border: 1px solid var(--line); border-radius: 1rem; background: var(--mobile-nav-bg); box-shadow: 0 .5rem 1.5rem var(--shadow); backdrop-filter: blur(18px); scrollbar-width: none; }
   .mobile-nav > a, .mobile-nav > span { min-width: 4rem; flex: 1 0 auto; padding: .65rem .25rem; color: var(--muted); text-align: center; font-size: .72rem; }
   .mobile-nav .active { color: var(--text); border-radius: .7rem; background: var(--accent-soft); }
-  .mobile-theme-picker { display: block; min-width: 10rem; flex: 0 0 10rem; margin-left: .35rem; }
+  .mobile-theme-picker { display: block; min-width: 0; }
   .mobile-theme-picker .theme-picker-label { display: none; }
-  .mobile-theme-picker .theme-options { height: 2.55rem; padding: .2rem; }
+  /* Let the group grow with its touch targets; a fixed height clips 44px buttons. */
+  .mobile-theme-picker .theme-options { padding: .2rem; }
   .mobile-theme-picker .theme-option { min-height: 2.1rem; }
 }
 @media (max-width: 560px) {

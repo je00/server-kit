@@ -1,15 +1,64 @@
 {% extends "base.html" %}
+{% load static %}
 
 {% block title %}管理账号 · server-kit{% endblock %}
+{% block extra_head %}<script src="{% static 'accounts.js' %}" defer></script>{% endblock %}
 
 {% block body %}
 <div class="app-shell">
   {% include "dashboard/_navigation.html" %}
-  <main class="content detail-content">
-    <header class="page-header"><div><p class="eyebrow">本机认证</p><h1>管理账号</h1><p class="muted">超级管理员可读取敏感配置并维护账号；管理员可管理服务、节点和订阅；只读账号只能查看脱敏状态与审计。</p></div><span class="stage-badge">{{ accounts|length }} 个账号</span></header>
+  <main id="main-content" tabindex="-1" class="content detail-content">
+    <header class="page-header"><div><p class="eyebrow">本机认证</p><h1>管理账号</h1><p class="muted">超级管理员可读取敏感配置并维护账号；管理员可管理服务、节点和订阅；只读账号只能查看脱敏状态与审计。</p></div><span class="stage-badge" data-account-count>{{ accounts|length }} 个账号</span></header>
     {% include "dashboard/_messages.html" %}
-    <section class="action-panel"><p class="eyebrow">新增账号</p><h2>创建本机管理身份</h2><form class="account-create-form" method="post">{% csrf_token %}<input type="hidden" name="operation" value="create"><label>账号名<input name="username" required maxlength="150" autocomplete="off"></label><label>角色<select name="role"><option value="admin">管理员</option><option value="viewer">只读</option><option value="superuser">超级管理员</option></select></label><label>新账号密码<input type="password" name="new_password" required autocomplete="new-password"></label><label>当前账号密码<input type="password" name="current_password" required autocomplete="current-password"></label><label class="check-row"><input type="checkbox" name="confirmed" value="yes" required><span>确认创建账号并按所选角色授权。</span></label><button class="action-button" type="submit">创建账号</button></form></section>
-    <section class="inventory-panel"><div class="section-heading"><div><p class="eyebrow">账号清单</p><h2>现有身份</h2></div></div><div class="account-list">{% for account in accounts %}<article><div><strong>{{ account.username }}</strong><p>{% if account.is_superuser %}超级管理员{% elif account.is_staff %}管理员{% else %}只读账号{% endif %} · {% if account.is_active %}已启用{% else %}已停用{% endif %}</p></div><div class="account-actions">{% if account.pk != request.user.pk %}<form method="post">{% csrf_token %}<input type="hidden" name="operation" value="{% if account.is_active %}disable{% else %}enable{% endif %}"><input type="hidden" name="user_id" value="{{ account.pk }}"><input type="password" name="current_password" required autocomplete="current-password" placeholder="当前账号密码"><input type="hidden" name="confirmed" value="yes"><button class="copy-button{% if account.is_active %} danger-quiet{% endif %}" type="submit">{% if account.is_active %}停用{% else %}启用{% endif %}</button></form>{% endif %}<details><summary class="copy-button">重置密码</summary><form method="post">{% csrf_token %}<input type="hidden" name="operation" value="reset_password"><input type="hidden" name="user_id" value="{{ account.pk }}"><label>新密码<input type="password" name="new_password" required autocomplete="new-password"></label><label>当前账号密码<input type="password" name="current_password" required autocomplete="current-password"></label><input type="hidden" name="confirmed" value="yes"><button class="secondary-button compact-button" type="submit">确认重置</button></form></details></div></article>{% endfor %}</div></section>
+    {% if account_error and account_form.operation != 'create' %}<div class="alert danger" role="alert">{{ account_error }} 密码不会回填，请在下方原操作处重新输入。</div>{% endif %}
+    <section class="action-panel"><p class="eyebrow">新增账号</p><h2>创建本机管理身份</h2>
+      <form class="account-create-form" method="post" action="{% url 'accounts' %}" data-account-form>
+        {% csrf_token %}<input type="hidden" name="operation" value="create">
+        <label>账号名<input name="username" value="{% if account_form.operation == 'create' %}{{ account_form.username }}{% endif %}" required maxlength="150" autocomplete="off" pattern="[A-Za-z0-9@.+_-]{1,150}"></label>
+        <label>角色<select name="role"><option value="admin"{% if account_form.role == 'admin' %} selected{% endif %}>管理员</option><option value="viewer"{% if account_form.role == 'viewer' %} selected{% endif %}>只读</option><option value="superuser"{% if account_form.role == 'superuser' %} selected{% endif %}>超级管理员</option></select></label>
+        <label>新账号密码<input type="password" name="new_password" required autocomplete="new-password"></label>
+        <label>当前账号密码<input type="password" name="current_password" required autocomplete="current-password"></label>
+        <label class="check-row"><input type="checkbox" name="confirmed" value="yes" required><span>确认创建账号并按所选角色授权。</span></label>
+        <p class="privacy-note">密码至少 14 位，避免使用常见密码或与账号名相似的内容。</p>
+        <div class="alert danger" role="status" aria-live="polite" tabindex="-1" data-account-feedback{% if not account_error or account_form.operation != 'create' %} hidden{% endif %}>{% if account_error and account_form.operation == 'create' %}{{ account_error }} 账号名和角色已保留，请重新输入密码。{% endif %}</div>
+        <button class="action-button" type="submit">创建账号</button>
+      </form>
+    </section>
+    <section class="inventory-panel">
+      <div class="section-heading"><div><p class="eyebrow">账号清单</p><h2>现有身份</h2></div></div>
+      <div class="account-list" data-account-list>
+        {% for account in accounts %}
+        <article data-account-card="{{ account.pk }}">
+          <div><strong data-account-name>{{ account.username }}</strong>{% if account.pk == request.user.pk %} <span class="protected-badge">当前账号</span>{% endif %}<p data-account-state>{% if account.is_superuser %}超级管理员{% elif account.is_staff %}管理员{% else %}只读账号{% endif %} · {% if account.is_active %}已启用{% else %}已停用{% endif %}</p></div>
+          <div class="account-actions">
+            <details{% if account_form.operation == 'reset_password' and account_form.user_id == account.pk|stringformat:'s' %} open{% endif %}>
+              <summary class="copy-button">重置密码</summary>
+              <form class="stack-form" method="post" action="{% url 'accounts' %}" data-account-form>{% csrf_token %}<input type="hidden" name="operation" value="reset_password"><input type="hidden" name="user_id" value="{{ account.pk }}"><label><span data-account-new-password-label>{{ account.username }} 的新密码</span><input type="password" name="new_password" required autocomplete="new-password"></label><label>当前账号密码<input type="password" name="current_password" required autocomplete="current-password"></label><input type="hidden" name="confirmed" value="yes"><div class="alert neutral" role="status" aria-live="polite" tabindex="-1" data-account-feedback hidden></div><button class="secondary-button compact-button" type="submit">确认重置</button></form>
+            </details>
+            {% if account.pk != request.user.pk %}
+            <details class="{% if account.is_active %}danger-zone{% endif %}" data-account-toggle{% if account_form.user_id == account.pk|stringformat:'s' and account_form.operation == 'enable' or account_form.user_id == account.pk|stringformat:'s' and account_form.operation == 'disable' %} open{% endif %}>
+              <summary class="copy-button{% if account.is_active %} danger-quiet{% endif %}" data-account-toggle-label>{% if account.is_active %}停用账号{% else %}启用账号{% endif %}</summary>
+              <form class="stack-form" method="post" action="{% url 'accounts' %}" data-account-form>{% csrf_token %}<input type="hidden" name="operation" value="{% if account.is_active %}disable{% else %}enable{% endif %}"><input type="hidden" name="user_id" value="{{ account.pk }}"><p class="privacy-note" data-account-toggle-help>{% if account.is_active %}停用后 {{ account.username }} 将无法登录管理网站。{% else %}启用后 {{ account.username }} 可按原有角色登录。{% endif %}</p><label>当前账号密码<input type="password" name="current_password" required autocomplete="current-password"></label><input type="hidden" name="confirmed" value="yes"><div class="alert neutral" role="status" aria-live="polite" tabindex="-1" data-account-feedback hidden></div><button class="secondary-button{% if account.is_active %} danger-quiet{% endif %}" type="submit" data-account-toggle-confirm>确认{% if account.is_active %}停用{% else %}启用{% endif %}</button></form>
+            </details>
+            {% endif %}
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+    </section>
+    <template data-account-card-template>
+      <article data-account-card="">
+        <div><strong data-account-name></strong><p data-account-state></p></div>
+        <div class="account-actions">
+          <details><summary class="copy-button">重置密码</summary>
+            <form class="stack-form" method="post" action="{% url 'accounts' %}" data-account-form>{% csrf_token %}<input type="hidden" name="operation" value="reset_password"><input type="hidden" name="user_id"><label><span data-account-new-password-label></span><input type="password" name="new_password" required autocomplete="new-password"></label><label>当前账号密码<input type="password" name="current_password" required autocomplete="current-password"></label><input type="hidden" name="confirmed" value="yes"><div class="alert neutral" role="status" aria-live="polite" tabindex="-1" data-account-feedback hidden></div><button class="secondary-button compact-button" type="submit">确认重置</button></form>
+          </details>
+          <details data-account-toggle><summary class="copy-button" data-account-toggle-label>停用账号</summary>
+            <form class="stack-form" method="post" action="{% url 'accounts' %}" data-account-form>{% csrf_token %}<input type="hidden" name="operation" value="disable"><input type="hidden" name="user_id"><p class="privacy-note" data-account-toggle-help></p><label>当前账号密码<input type="password" name="current_password" required autocomplete="current-password"></label><input type="hidden" name="confirmed" value="yes"><div class="alert neutral" role="status" aria-live="polite" tabindex="-1" data-account-feedback hidden></div><button class="secondary-button" type="submit" data-account-toggle-confirm>确认停用</button></form>
+          </details>
+        </div>
+      </article>
+    </template>
   </main>
 </div>
 {% endblock %}

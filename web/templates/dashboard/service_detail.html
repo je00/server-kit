@@ -5,11 +5,12 @@
 {% block body %}
 <div class="app-shell">
   {% include "dashboard/_navigation.html" %}
-  <main class="content detail-content">
+  <main id="main-content" tabindex="-1" class="content detail-content">
     <a class="back-link" href="{% url 'dashboard' %}">← 返回服务总览</a>
     {% include "dashboard/_messages.html" %}
     {% if snapshot_error %}
-      <div class="alert danger">{{ snapshot_error }}</div>
+      <header class="page-header"><div><p class="eyebrow">托管服务</p><h1>服务详情暂不可用</h1><p class="muted">未能读取当前状态；为避免误操作，已隐藏变更按钮。</p></div></header>
+      <div class="alert danger" role="alert">{{ snapshot_error }}</div>
     {% else %}
     <header class="page-header detail-header">
       <div>
@@ -114,7 +115,7 @@
                 <input type="hidden" name="scope" value="{{ item.scope }}">
                 <input type="hidden" name="protocol" value="{{ item.protocol }}">
                 <input type="hidden" name="duration" value="permanent">
-                <button class="danger-button compact-button" type="submit">关闭端口</button>
+                <button class="action-button danger-button compact-button" type="submit">关闭端口</button>
               </form>
             </div>
             {% endif %}
@@ -179,7 +180,7 @@
                 {% csrf_token %}
                 <input type="hidden" name="operation" value="delete">
                 <input type="hidden" name="item_id" value="{{ item.key_id }}">
-                <button class="danger-button compact-button" type="submit">删除</button>
+                <button class="action-button danger-button compact-button" type="submit">删除</button>
               </form>
               {% else %}
                 <span class="protected-badge">最后一把，受保护</span>
@@ -235,13 +236,14 @@
     <section class="action-panel">
       <div>
         <p class="eyebrow">服务操作</p>
-        <h2>变更前会再次确认</h2>
+        <h2>启动、停止与维护</h2>
       </div>
       {% if description.restriction %}
         <div class="alert neutral">{{ description.restriction }}</div>
       {% elif not request.user.is_superuser and not request.user.is_staff %}
         <div class="alert neutral">当前账号只有查看权限。</div>
       {% else %}
+        <p class="muted">先查看影响，再确认执行。停止服务可能使对应连接不可用。</p>
         <div class="action-row">
         {% for operation in operations %}
           <form method="post" action="{% url 'service-action-preview' service.id %}">
@@ -258,7 +260,7 @@
 </div>
 {% if service.id == "clash" and request.user.is_superuser %}
 <div class="qr-modal" data-qr-modal hidden>
-  <div class="qr-backdrop" data-qr-close></div>
+  <button class="qr-backdrop" type="button" data-qr-close aria-label="关闭二维码"></button>
   <section class="qr-dialog" role="dialog" aria-modal="true" aria-labelledby="qr-dialog-title">
     <button class="qr-close" type="button" data-qr-close aria-label="关闭">×</button>
     <p class="eyebrow">Clash 订阅</p>

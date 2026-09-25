@@ -80,7 +80,7 @@ class InventoryTests(unittest.TestCase):
             self.paths.clash,
             {
                 "port": 52541,
-                "server_address": "203.0.113.10",
+                "server_address": "203.0.113.188",
                 "downloads": [
                     {
                         "download_name": "home.yaml",

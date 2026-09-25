@@ -15,6 +15,16 @@ import uuid
 from pathlib import Path
 
 try:
+    from lib.server_kit_permission_batch import PermissionBatchError, append_rule, read_rules
+except ModuleNotFoundError:
+    from server_kit_permission_batch import PermissionBatchError, append_rule, read_rules
+
+try:
+    from lib.server_kit_port_ranges import PortRangeError, format_ports, parse_ports as parse_port_ranges
+except ModuleNotFoundError:
+    from server_kit_port_ranges import PortRangeError, format_ports, parse_ports as parse_port_ranges
+
+try:
     from lib.server_kit_node_domains import (
         NodeDomainError, load_address_state, load_state as load_node_domain_state,
     )
@@ -85,13 +95,10 @@ def pending_policy(active_path: Path, pending_path: Path) -> dict:
 
 
 def parse_ports(value: str) -> list[int]:
-    ports: set[int] = set()
-    for item in value.split(","):
-        item = item.strip()
-        if not item.isdigit() or not 1 <= int(item) <= 65535:
-            raise PolicyError(f"无效端口：{item or '(空)'}")
-        ports.add(int(item))
-    return sorted(ports)
+    try:
+        return parse_port_ranges(value)
+    except PortRangeError as error:
+        raise PolicyError(str(error)) from error
 
 
 def parse_awg_peers(path: Path) -> dict[str, str]:
@@ -275,9 +282,30 @@ def allow_target(args: argparse.Namespace) -> None:
     description = (
         "全部协议与端口"
         if network == "all"
-        else f"{network.upper()} {','.join(map(str, ports))}"
+        else f"{network.upper()} {format_ports(ports)}"
     )
     print(f"已加入待应用权限：{name} -> {target} ({target_ip})，{description}")
+
+
+def allow_batch(args: argparse.Namespace) -> None:
+    """Validate all additions, then write a single isolated candidate policy."""
+    rules = read_rules(sys.stdin)
+    name = validate_name(args.name, "客户端名")
+    if args.pending.exists():
+        raise PolicyError("存在尚未处理的 VLESS 待应用策略。")
+    policy = normalize_policy(load_json(args.active, empty_policy()))
+    client = policy["clients"].get(name)
+    if not isinstance(client, dict) or client.get("enabled", True) is not True:
+        raise PolicyError("只有已启用客户端可以配置访问权限。")
+    entries = client.setdefault("allow", [])
+    if not isinstance(entries, list):
+        raise PolicyError("客户端允许列表格式不正确。")
+    for rule in rules:
+        target, address = resolve_target(rule["target"], args.peer_db, args.awg_state)
+        if target == name:
+            raise PolicyError("不能把节点自身作为访问目标。")
+        append_rule(entries, rule, address)
+    write_json(args.pending, policy)
 
 
 def deny_target(args: argparse.Namespace) -> None:
@@ -500,7 +528,7 @@ def render_config(
             }
             if permission.get("network") != "all":
                 rule["network"] = permission.get("network", "tcp")
-                rule["port"] = ",".join(str(port) for port in permission["ports"])
+                rule["port"] = format_ports(permission["ports"])
             managed_rules.append(rule)
         # 允许规则必须位于内网拒绝规则之前；未命中的 AWG 地址统一阻断。
         managed_rules.append({
@@ -584,6 +612,9 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("ports", nargs="?", default="")
     command.add_argument("network", nargs="?", choices=("tcp", "udp", "tcp,udp"), default="tcp")
     command.set_defaults(function=allow_target)
+    command = subparsers.add_parser("allow-batch")
+    command.add_argument("name")
+    command.set_defaults(function=allow_batch)
 
     command = subparsers.add_parser("deny")
     command.add_argument("name")
@@ -620,7 +651,7 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         args.function(args)
-    except PolicyError as exc:
+    except (PolicyError, PermissionBatchError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 1
     return 0

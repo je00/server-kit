@@ -1,0 +1,1 @@
+<a class="nav-item{% if active_page == page %} active{% endif %}" href="{% url route %}"{% if active_page == page %} aria-current="page"{% endif %}>{% include "dashboard/_icon.html" with icon=page %}<span>{{ label }}</span>{% if active_page == page %}<span class="nav-current-mark" aria-hidden="true"></span>{% endif %}</a>

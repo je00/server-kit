@@ -17,6 +17,8 @@ from lib.server_kit_node_domains import (
     NodeDomainError, normalize_domains, validate_wildcard_conflicts,
 )
 from lib.server_kit_public_endpoint import normalize_fqdn
+from lib.server_kit_port_ranges import PortRangeError, format_ports, parse_ports
+from lib.server_kit_permission_batch import PermissionBatchError, normalize_rules
 
 from .actions import ActionCatalogError, ActionDefinition, validate_action_request
 from .tasks import PreparedAction, TaskEngineError
@@ -226,6 +228,11 @@ class Runner(Protocol):
     ) -> dict[str, Any]:
         """变更普通 AWG 或 VLESS 节点的访问策略。"""
 
+    def add_network_permissions(
+        self, client: str, rules: list[dict[str, str]], actor: str,
+    ) -> dict[str, Any]:
+        """一次应用全部新增权限，保留已有规则。"""
+
 
 class TaskEngine(Protocol):
     """控制面调用异步任务 module 所需的最小接口。"""
@@ -341,6 +348,7 @@ class ControlPlane:
             "network.node.change", "network.node.import",
             "network.node.domains", "network.address.domains",
             "network.permission.change",
+            "network.permission.batch",
         }:
             return self._prepare_network_task(protocol_action, arguments, actor)
         if protocol_action in {
@@ -838,7 +846,42 @@ class ControlPlane:
         overview = self._runner.network_overview()
         nodes = [item for item in overview.get("nodes", []) if isinstance(item, dict)]
         sensitive_params: dict[str, object] | None = None
-        if protocol_action in {"network.node.domains", "network.address.domains"}:
+        if protocol_action == "network.permission.batch":
+            client = params.get("client")
+            if not isinstance(client, str) or not ITEM_ID_PATTERN.fullmatch(client):
+                raise TaskEngineError("invalid_params", "来源节点参数不正确。")
+            clients = [item for item in nodes if item.get("name") == client]
+            if len(clients) != 1 or clients[0].get("state") != "已启用":
+                raise TaskEngineError("invalid_params", "只有已启用节点可以配置访问授权。")
+            subject = clients[0]
+            try:
+                rules = normalize_rules(params.get("rules"))
+            except PermissionBatchError as error:
+                raise TaskEngineError("invalid_params", str(error)) from error
+            targets = {
+                item.get("name") for item in overview.get("targets", [])
+                if isinstance(item, dict)
+            }
+            existing = [item for item in subject.get("permissions", []) if isinstance(item, dict)]
+            facts = {"来源节点": client, "新增规则": str(len(rules)), "已有权限": "全部保留；不修改管理入口"}
+            for index, rule in enumerate(rules, 1):
+                if rule["target"] not in targets or rule["target"] == client:
+                    raise TaskEngineError("not_found", f"第 {index} 条权限目标不存在或不能选择节点自身。")
+                ports = parse_ports(rule["ports"]) if rule["ports"] else []
+                if any(
+                    item.get("target") == rule["target"] and item.get("network") == rule["network"]
+                    and item.get("ports") == ports for item in existing
+                ) or (
+                    subject.get("kind") == "awg" and subject.get("access_mode") == "unrestricted"
+                    and rule["target"] == "all" and rule["network"] == "all"
+                ):
+                    raise TaskEngineError("invalid_params", f"第 {index} 条访问权限已经存在。")
+                target_label = "全部节点" if rule["target"] == "all" else rule["target"]
+                detail = "全部协议与端口" if rule["network"] == "all" else f"{rule['network'].upper()} {rule['ports']}"
+                facts[f"规则 {index}"] = f"{target_label} · {detail}"
+            params["rules"] = rules
+            title = f"新增 {len(rules)} 条访问权限"
+        elif protocol_action in {"network.node.domains", "network.address.domains"}:
             if protocol_action == "network.address.domains":
                 address = params.get("address")
                 domains = params.get("domains")
@@ -1146,17 +1189,16 @@ class ControlPlane:
             elif network in {"tcp", "udp"}:
                 if not ports:
                     raise TaskEngineError("invalid_params", "指定协议时必须填写端口。")
-                values = ports.split(",")
-                if not values or any(
-                    not value.isdigit() or not 1 <= int(value) <= 65535
-                    for value in values
-                ):
-                    raise TaskEngineError("invalid_params", "授权端口列表无效。")
+                try:
+                    ports = format_ports(parse_ports(ports))
+                except PortRangeError as error:
+                    raise TaskEngineError("invalid_params", str(error)) from error
+                params["ports"] = ports
             elif ports or network:
                 raise TaskEngineError("invalid_params", "访问授权协议与端口不匹配。")
 
             desired_network = network or "all"
-            desired_ports = [int(value) for value in ports.split(",") if value]
+            desired_ports = parse_ports(ports) if ports else []
             permissions = [
                 permission for permission in subject.get("permissions", [])
                 if isinstance(permission, dict)
@@ -1905,6 +1947,10 @@ class ControlPlane:
                 str(params.get("target", "")), str(params.get("ports", "")),
                 str(params.get("network", "")), actor,
             )
+        if protocol_action == "network.permission.batch":
+            return self._runner.add_network_permissions(
+                str(params.get("client", "")), normalize_rules(params.get("rules")), actor,
+            )
         if protocol_action == "network.subscriptions.sync":
             return self._runner.sync_network_subscriptions(actor)
         if protocol_action == "network.subscription.rotate":
@@ -2110,6 +2156,7 @@ class ControlPlane:
             "network.node.domains",
             "network.address.domains",
             "network.permission.change",
+            "network.permission.batch",
             "network.subscriptions.sync",
             "network.subscription.rotate",
             "network.subscription.state",

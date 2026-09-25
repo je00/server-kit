@@ -5,7 +5,7 @@
 {% block body %}
 <div class="app-shell">
   {% include "dashboard/_navigation.html" %}
-  <main class="content detail-content narrow-content">
+  <main id="main-content" tabindex="-1" class="content detail-content narrow-content">
     <a class="back-link" href="{% url 'service-detail' 'ssh' %}">← 返回系统 SSH</a>
     <header class="page-header">
       <div>

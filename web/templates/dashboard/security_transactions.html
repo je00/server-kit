@@ -5,9 +5,9 @@
 {% block body %}
 <div class="app-shell">
   {% include "dashboard/_navigation.html" %}
-  <main class="content detail-content">
+  <main id="main-content" tabindex="-1" class="content detail-content">
     <header class="page-header detail-header">
-      <div><p class="eyebrow">高风险变更</p><h1>安全事务</h1><p class="muted">所有变更先预览；应用后 5 分钟自动回滚。最终确认必须从另一条独立登录连接完成，原发起会话会被拒绝。</p></div>
+      <div><p class="eyebrow">高风险变更</p><h1>安全事务</h1><p class="muted">先预览再应用；应用后若 5 分钟内未确认，将自动回滚。请通过另一条独立登录连接验证并确认，原发起会话不能确认。</p></div>
       <span class="stage-badge">事务保护</span>
     </header>
     {% include "dashboard/_messages.html" %}

@@ -27,7 +27,7 @@ class VlessAccessTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.peer_db = self.root / "peers.tsv"
         self.awg_state = self.root / "manager.conf"
-        self.peer_db.write_text("home-desk\t10.20.0.101\nlab-node\t10.20.0.201\n", encoding="utf-8")
+        self.peer_db.write_text("home-desk\t10.20.0.101\napie-p15v\t10.20.0.201\n", encoding="utf-8")
         self.awg_state.write_text("AWG_SERVER_IP=10.20.0.1\n", encoding="utf-8")
 
     def tearDown(self) -> None:
@@ -43,8 +43,8 @@ class VlessAccessTests(unittest.TestCase):
             ("vps", "10.20.0.1"),
         )
         self.assertEqual(
-            vless_access.resolve_target("lab-node", self.peer_db, self.awg_state),
-            ("lab-node", "10.20.0.201"),
+            vless_access.resolve_target("apie-p15v", self.peer_db, self.awg_state),
+            ("apie-p15v", "10.20.0.201"),
         )
         with self.assertRaises(vless_access.PolicyError):
             vless_access.resolve_target("missing", self.peer_db, self.awg_state)
@@ -95,6 +95,32 @@ class VlessAccessTests(unittest.TestCase):
             "target": "home-desk", "ip": "10.20.0.101",
             "ports": [53], "network": "udp",
         }])
+
+    def test_range_round_trip_render_and_delete(self) -> None:
+        active, pending = self.root / "active.json", self.root / "pending.json"
+        active.write_text(json.dumps({"version": 1, "clients": {"phone": {
+            "uuid": "11111111-1111-4111-8111-111111111111", "enabled": True,
+            "email": "server-kit-vless:phone", "allow": [],
+        }}}))
+        args = argparse.Namespace(name="phone", target="vps", ports="22,60001-60003,60003-60005", network="udp",
+                                  active=active, pending=pending, peer_db=self.peer_db, awg_state=self.awg_state)
+        with contextlib.redirect_stdout(io.StringIO()):
+            vless_access.allow_target(args)
+        policy = json.loads(pending.read_text())
+        self.assertEqual(policy["clients"]["phone"]["allow"][0]["ports"], [22, *range(60001, 60006)])
+        config = {"inbounds": [{"tag": "vless-public", "protocol": "vless", "settings": {"clients": []}}],
+                  "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
+                  "routing": {"rules": []}}
+        rendered = vless_access.render_config(config, policy, "vless-public", "10.20.0.0/24")
+        rule = rendered["routing"]["rules"][0]
+        self.assertEqual(rule["port"], "22,60001-60005")
+        self.assertEqual(rule["network"], "udp")
+        args.ports = "60001-60005,22"
+        with self.assertRaises(vless_access.PolicyError):
+            vless_access.allow_target(args)
+        with contextlib.redirect_stdout(io.StringIO()):
+            vless_access.deny_target(args)
+        self.assertEqual(json.loads(pending.read_text())["clients"]["phone"]["allow"], [])
 
     def test_legacy_stash_compatibility_is_per_client_policy(self) -> None:
         active = self.root / "active.json"
@@ -186,7 +212,7 @@ class VlessAccessTests(unittest.TestCase):
                     "enabled": True,
                     "allow": [
                         {"target": "all", "ip": "10.20.0.0/24", "ports": [22], "network": "tcp"},
-                        {"target": "lab-node", "ip": "10.20.0.201", "ports": [], "network": "all"},
+                        {"target": "apie-p15v", "ip": "10.20.0.201", "ports": [], "network": "all"},
                     ],
                 },
             },
@@ -239,7 +265,7 @@ class VlessAccessTests(unittest.TestCase):
                     "enabled": True,
                     "allow": [
                         {"target": "vps", "ip": "10.20.0.1", "ports": [22], "network": "tcp"},
-                        {"target": "lab-node", "ip": "10.20.0.201", "ports": [22, 443], "network": "tcp"},
+                        {"target": "apie-p15v", "ip": "10.20.0.201", "ports": [22, 443], "network": "tcp"},
                     ],
                 }
             },
@@ -372,7 +398,7 @@ class VlessAccessTests(unittest.TestCase):
                     "email": "server-kit-vless:home-iphone",
                     "enabled": True,
                     "allow": [{
-                        "target": "lab-node",
+                        "target": "apie-p15v",
                         "ip": "10.20.0.201",
                         "ports": [22],
                         "network": "tcp",

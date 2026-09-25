@@ -47,12 +47,14 @@ except ImportError:
 
 try:
     from .clash_airport_projection import apply_clean_projection
+    from .stash_bootstrap import apply_stash_bootstrap
     from .server_kit_publication_state import PublicationStateError, load as load_publication_state
     from .server_kit_proxy_resources import (
         ProxyResourceError, normalized_config as load_proxy_inputs, selected_exit_ids,
     )
 except ImportError:
     from clash_airport_projection import apply_clean_projection
+    from stash_bootstrap import apply_stash_bootstrap
     from server_kit_publication_state import PublicationStateError, load as load_publication_state
     from server_kit_proxy_resources import (
         ProxyResourceError, normalized_config as load_proxy_inputs, selected_exit_ids,
@@ -350,7 +352,11 @@ def add_server_relay(config: dict, node: dict) -> None:
 
 
 def apply_stash_benchmark(config: dict) -> None:
-    """让 Stash 个性化订阅中的本地节点使用同一 HTTP 测速目标。"""
+    """Use Stash's native benchmark fields, including remotely refreshed nodes.
+
+    Provider benchmark-url/benchmark-timeout have been supported since 2.6.5.
+    Mihomo health-check.url is not a substitute for these fields in Stash.
+    """
 
     proxies = config.get("proxies", [])
     if not isinstance(proxies, list):
@@ -360,6 +366,13 @@ def apply_stash_benchmark(config: dict) -> None:
             continue
         proxy["benchmark-url"] = STASH_BENCHMARK_URL
         proxy["benchmark-timeout"] = STASH_BENCHMARK_TIMEOUT
+    providers = config.get("proxy-providers", {})
+    if not isinstance(providers, dict):
+        fail("基础 Clash 订阅的 proxy-providers 必须是映射")
+    for provider in providers.values():
+        if isinstance(provider, dict):
+            provider["benchmark-url"] = STASH_BENCHMARK_URL
+            provider["benchmark-timeout"] = STASH_BENCHMARK_TIMEOUT
 
 
 def resource_endpoints(config: dict) -> set[str]:
@@ -1117,6 +1130,11 @@ def main() -> int:
                 preserved_relay_names,
                 vless_relay_group_names,
             )
+        else:
+            try:
+                apply_stash_bootstrap(subscription, proxy_inputs)
+            except ValueError as error:
+                fail(str(error))
         publish(name, "vless", subscription, comment_disabled_rules=True)
 
     service_config = {

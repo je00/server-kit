@@ -20,6 +20,11 @@ SSHD_BIN="${SERVER_KIT_SSHD_BIN:-/usr/sbin/sshd}"
 SSHD_RUNTIME_DIR="${SERVER_KIT_SSHD_RUNTIME_DIR:-/run/sshd}"
 SYSTEMCTL_BIN="${SERVER_KIT_SYSTEMCTL_BIN:-systemctl}"
 SYSTEMD_RUN_BIN="${SERVER_KIT_SYSTEMD_RUN_BIN:-systemd-run}"
+MAIN_CONFIG="${SERVER_KIT_SSH_MAIN_CONFIG:-/etc/ssh/sshd_config}"
+UNIT_DIR="${SERVER_KIT_SSH_UNIT_DIR:-/etc/systemd/system}"
+SOCKET_CONFIG="$UNIT_DIR/ssh.socket.d/zz-server-kit.conf"
+RECOVERY_UNIT="server-kit-node-ssh-network-recovery"
+RECOVERY_SCRIPT="${SERVER_KIT_SSH_RECOVERY_SCRIPT:-/usr/local/lib/server-kit/node-ssh-network.sh}"
 AUTHORIZED_KEYS_OVERRIDE="${SERVER_KIT_AUTHORIZED_KEYS_PATH:-}"
 CALLER_USER="${SUDO_USER:-$(id -un)}"
 [[ -n "$CALLER_USER" ]] || CALLER_USER="$(id -un)"
@@ -49,6 +54,7 @@ configured_value() {
 
 valid_ipv4() {
   local ip="$1" octet
+  [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
   local -a parts
   IFS=. read -r -a parts <<<"$ip"
   ((${#parts[@]} == 4)) || return 1
@@ -73,7 +79,7 @@ ipv4_number() {
 
 address_in_cidr() {
   local address="$1" cidr="$2" prefix mask address_number network_number
-  prefix="${cidr##*/}"
+  prefix=$((10#${cidr##*/}))
   address_number="$(ipv4_number "$address")"
   network_number="$(ipv4_number "${cidr%/*}")"
   ((prefix == 0)) && return 0
@@ -128,22 +134,26 @@ list_networks() {
 reapply_ssh_if_running() {
   local current_port old_port
   current_port="$(configured_value Port)"
-  [[ -n "$current_port" ]] && "$SYSTEMCTL_BIN" is-active --quiet ssh || return 0
+  [[ -n "$current_port" ]] || return 0
+  "$SYSTEMCTL_BIN" is-active --quiet ssh || "$SYSTEMCTL_BIN" is-active --quiet ssh.socket || return 0
   old_port="$PORT"; PORT="$current_port"; enable_ssh; PORT="$old_port"
 }
 
-add_network() {
+add_network() (
   require_root
   local cidr="${PORT:-}"
   valid_cidr "$cidr" || { echo "请输入有效的 IPv4 CIDR，例如 192.168.1.0/24。" >&2; return 2; }
   allowed_networks | grep -Fxq "$cidr" && { echo "允许网段已存在：$cidr"; return 0; }
   materialize_networks_file
+  local backup
+  backup="$(mktemp)"; cp -a "$NETWORKS_FILE" "$backup"
+  trap 'result=$?; if ((result != 0)); then cp -a "$backup" "$NETWORKS_FILE"; fi; rm -f "$backup"' EXIT
   printf '%s\n' "$cidr" >>"$NETWORKS_FILE"; chmod 0644 "$NETWORKS_FILE"
   reapply_ssh_if_running
   echo "已加入允许网段：$cidr"
-}
+)
 
-remove_network() {
+remove_network() (
   require_root
   local cidr="${PORT:-}" temporary network_count
   valid_cidr "$cidr" || { echo "请输入有效的 IPv4 CIDR。" >&2; return 2; }
@@ -151,12 +161,15 @@ remove_network() {
   network_count="$(allowed_networks | grep -c .)"
   (( network_count > 1 )) || { echo "至少保留一个允许网段，请先添加新网段。" >&2; return 2; }
   materialize_networks_file
+  local backup
+  backup="$(mktemp)"; cp -a "$NETWORKS_FILE" "$backup"
+  trap 'result=$?; if ((result != 0)); then cp -a "$backup" "$NETWORKS_FILE"; fi; rm -f "$backup"' EXIT
   temporary="$(mktemp)"
   grep -Fvx "$cidr" "$NETWORKS_FILE" >"$temporary" || true
   install -m 0644 "$temporary" "$NETWORKS_FILE"; rm -f "$temporary"
   reapply_ssh_if_running
   echo "已删除允许网段：$cidr"
-}
+)
 
 remove_firewall_rule() {
   local backend rule number old_address old_port old_rule
@@ -165,24 +178,33 @@ remove_firewall_rule() {
   if [[ -f "$FIREWALL_STATE" ]]; then
     while IFS=$'\t' read -r backend rule || [[ -n "$backend$rule" ]]; do
       [[ "$backend" == "firewalld" && -n "$rule" ]] || continue
-      firewall-cmd --permanent --remove-rich-rule="$rule" >/dev/null 2>&1 || true
+      if firewall-cmd --permanent --query-rich-rule="$rule" >/dev/null 2>&1; then
+        firewall-cmd --permanent --remove-rich-rule="$rule" >/dev/null || return 1
+      fi
+      if firewall-cmd --query-rich-rule="$rule" >/dev/null 2>&1; then
+        firewall-cmd --remove-rich-rule="$rule" >/dev/null || return 1
+      fi
     done <"$FIREWALL_STATE"
     rm -f "$FIREWALL_STATE"
   fi
   if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
     if [[ -n "$old_address" && -n "$old_port" ]]; then
       old_rule="rule family=ipv4 source address=$INITIAL_NETWORK destination address=$old_address port port=$old_port protocol=tcp accept"
-      firewall-cmd --permanent --remove-rich-rule="$old_rule" >/dev/null 2>&1 || true
+      if firewall-cmd --permanent --query-rich-rule="$old_rule" >/dev/null 2>&1; then
+        firewall-cmd --permanent --remove-rich-rule="$old_rule" >/dev/null || return 1
+      fi
+      if firewall-cmd --query-rich-rule="$old_rule" >/dev/null 2>&1; then
+        firewall-cmd --remove-rich-rule="$old_rule" >/dev/null || return 1
+      fi
     fi
-    firewall-cmd --reload >/dev/null
   fi
   if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
-    while number="$(ufw status numbered | awk '/server-kit SSH allowed/ {gsub(/[][]/, "", $1); print $1; exit}')" && [[ -n "$number" ]]; do
-      ufw --force delete "$number" >/dev/null
+    while number="$(ufw status numbered | awk '/server-kit SSH allowed/ {sub(/^.*\[/, ""); sub(/\].*$/, ""); gsub(/[[:space:]]/, ""); print; exit}')" && [[ -n "$number" ]]; do
+      ufw --force delete "$number" >/dev/null || return 1
     done
     # 兼容旧版本脚本创建的规则。
-    while number="$(ufw status numbered | awk '/server-kit SSH via AWG/ {gsub(/[][]/, "", $1); print $1; exit}')" && [[ -n "$number" ]]; do
-      ufw --force delete "$number" >/dev/null
+    while number="$(ufw status numbered | awk '/server-kit SSH via AWG/ {sub(/^.*\[/, ""); sub(/\].*$/, ""); gsub(/[[:space:]]/, ""); print; exit}')" && [[ -n "$number" ]]; do
+      ufw --force delete "$number" >/dev/null || return 1
     done
   fi
 }
@@ -193,7 +215,7 @@ show_status() {
   port="$(configured_value Port)"
   service="$(systemctl is-active ssh 2>/dev/null || true)"
   startup="$(systemctl is-enabled ssh 2>/dev/null || true)"
-  listeners="$(ss -ltnp 2>/dev/null | awk '$0 ~ /sshd/ {print $4}' | paste -sd, -)"
+  listeners="$(ss -H -ltn 2>/dev/null | awk -v port="${port:-22}" '$4 ~ (":" port "$") {print $4}' | paste -sd, -)"
   firewall="未开放"
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'server-kit SSH allowed'; then
     firewall="已应用允许网段（UFW）"
@@ -203,6 +225,8 @@ show_status() {
   echo "server-kit SSH 当前状态"
   echo "  服务：${service:-未安装}"
   echo "  自启：${startup:-未设置}"
+  echo "  Socket：$("$SYSTEMCTL_BIN" is-active ssh.socket 2>/dev/null || true) / $("$SYSTEMCTL_BIN" is-enabled ssh.socket 2>/dev/null || true)"
+  echo "  自动恢复：$("$SYSTEMCTL_BIN" is-enabled "$RECOVERY_UNIT.timer" 2>/dev/null || true)"
   echo "  监听地址：${addresses:-未配置}"
   echo "  端口：${port:-未配置}"
   echo "  监听：${listeners:-未监听}"
@@ -285,8 +309,12 @@ valid_authorized_key_count() {
 effective_auth_value() {
   local key="$1"
   [[ -x "$SSHD_BIN" ]] || return 0
-  "$SSHD_BIN" -T -C "user=${AUTHORIZED_USER},host=localhost,addr=127.0.0.1" 2>/dev/null |
-    awk -v key="$key" '$1 == key {print $2; exit}'
+  if [[ "${AUTH_SNAPSHOT+x}" ]]; then
+    awk -v key="$key" '$1 == key {print $2}' <<<"$AUTH_SNAPSHOT"
+  else
+    "$SSHD_BIN" -T -C "user=${AUTHORIZED_USER},host=localhost,addr=127.0.0.1" 2>/dev/null |
+      awk -v key="$key" '$1 == key {print $2}'
+  fi
 }
 
 auth_is_hardened() {
@@ -298,6 +326,8 @@ auth_is_hardened() {
 
 show_auth_status() {
   local password="未知" methods="未知" state="未启用" keys=0
+  local AUTH_SNAPSHOT
+  AUTH_SNAPSHOT="$("$SSHD_BIN" -T -C "user=${AUTHORIZED_USER},host=localhost,addr=127.0.0.1" 2>/dev/null || true)"
   keys="$(valid_authorized_key_count)"
   if [[ -x "$SSHD_BIN" ]]; then
     password="$(effective_auth_value passwordauthentication)"; password="${password:-未知}"
@@ -486,105 +516,234 @@ remove_key() {
   echo "公钥已删除。"; list_keys
 }
 
-enable_ssh() {
+socket_in_use() {
+  "$SYSTEMCTL_BIN" is-active --quiet ssh.socket || "$SYSTEMCTL_BIN" is-enabled --quiet ssh.socket
+}
+
+write_network_config() {
+  local address cidr deny_pattern="*"
+  echo '# 由 server-kit 管理：只监听允许网段对应的本机地址'
+  echo "Port $PORT"
+  while IFS= read -r address; do echo "ListenAddress $address"; done < <(managed_addresses | sort -u)
+  while IFS= read -r cidr; do deny_pattern+=",!$cidr"; done < <(allowed_networks | sort -u)
+  echo "Match Address $deny_pattern"
+  echo '    DenyUsers *'
+  echo 'Match all'
+}
+
+listeners_match() {
+  local expected actual
+  expected="$(awk '$1 == "ListenAddress" {print $2 ":" port}' port="$PORT" "$MANAGED_CONFIG" | sort -u)"
+  # Socket activation may own the FD; do not depend on process names.
+  actual="$(ss -H -ltn | awk -v port="$PORT" '$4 ~ (":" port "$") {print $4}' | sort -u)"
+  [[ -n "$expected" && "$actual" == "$expected" ]]
+}
+
+write_socket_config() {
+  printf '%s\n' '[Socket]' 'ListenStream='
+  awk -v port="$PORT" '$1 == "ListenAddress" {print "ListenStream=" $2 ":" port}' "$MANAGED_CONFIG"
+  echo 'FreeBind=yes'
+}
+
+validate_effective_listeners() {
+  local expected effective
+  expected="$(awk -v port="$PORT" '$1 == "ListenAddress" {print $2 ":" port}' "$MANAGED_CONFIG" | sort -u)"
+  effective="$("$SSHD_BIN" -T | awk '$1 == "listenaddress" {print $2}' | sort -u)" || return 1
+  [[ -n "$expected" && "$effective" == "$expected" ]] || {
+    echo "其他 SSH 配置包含冲突的端口或监听地址，已拒绝应用。" >&2; return 1;
+  }
+}
+
+apply_managed_firewall() {
+  local config="$1" address cidr rule port
+  [[ -f "$config" ]] || return 0
+  port="$(awk '$1 == "Port" {print $2; exit}' "$config")"
+  [[ -n "$port" ]] || return 0
+  local -a addresses networks
+  mapfile -t addresses < <(awk '$1 == "ListenAddress" {print $2}' "$config")
+  mapfile -t networks < <(awk '$1 == "Match" && $2 == "Address" {gsub(/,!/, "\n", $3); print $3}' "$config" | tail -n +2)
+  install -d -m 0700 "$(dirname "$FIREWALL_STATE")"
+  touch "$FIREWALL_STATE"; chmod 0600 "$FIREWALL_STATE"
+  if command -v firewall-cmd >/dev/null 2>&1 && "$SYSTEMCTL_BIN" is-active --quiet firewalld; then
+    for cidr in "${networks[@]}"; do
+      for address in "${addresses[@]}"; do
+        rule="rule family=ipv4 source address=$cidr destination address=$address port port=$port protocol=tcp accept"
+        printf 'firewalld\t%s\n' "$rule" >>"$FIREWALL_STATE"
+        firewall-cmd --permanent --add-rich-rule="$rule" >/dev/null || return 1
+        firewall-cmd --add-rich-rule="$rule" >/dev/null || return 1
+      done
+    done
+  elif command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
+    for cidr in "${networks[@]}"; do
+      for address in "${addresses[@]}"; do
+        ufw allow from "$cidr" to "$address" port "$port" proto tcp comment 'server-kit SSH allowed' >/dev/null || return 1
+      done
+    done
+  fi
+}
+
+install_network_recovery() {
+  install -d -m 0755 "$(dirname "$RECOVERY_SCRIPT")" "$UNIT_DIR"
+  if [[ "$(readlink -f "$0")" != "$(readlink -f "$RECOVERY_SCRIPT")" ]]; then
+    install -m 0700 "$0" "$RECOVERY_SCRIPT"
+  fi
+  printf '%s\n' '[Unit]' 'Description=Reconcile server-kit SSH listeners' \
+    'After=network.target' '[Service]' 'Type=oneshot' \
+    "ExecStart=/bin/bash $RECOVERY_SCRIPT reconcile" >"$UNIT_DIR/$RECOVERY_UNIT.service"
+  printf '%s\n' '[Unit]' 'Description=Check server-kit SSH network addresses' \
+    '[Timer]' 'OnBootSec=30s' 'OnUnitActiveSec=30s' 'AccuracySec=5s' \
+    '[Install]' 'WantedBy=timers.target' >"$UNIT_DIR/$RECOVERY_UNIT.timer"
+  chmod 0644 "$UNIT_DIR/$RECOVERY_UNIT."{service,timer}
+  "$SYSTEMCTL_BIN" daemon-reload
+  "$SYSTEMCTL_BIN" enable --now "$RECOVERY_UNIT.timer"
+}
+
+restore_file() {
+  local original="$1" saved="$2"
+  if [[ -e "$saved" ]]; then cp -a "$saved" "$original"; else rm -f "$original"; fi
+}
+
+enable_ssh() (
   require_root
-  if [[ ! "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1 || PORT > 65535 )); then
-    echo "开启时必须传入 1–65535 的端口。" >&2
-    usage
-    exit 2
+  [[ "$PORT" =~ ^[0-9]{1,5}$ ]] && ((10#$PORT >= 1 && 10#$PORT <= 65535)) || {
+    echo "开启时必须传入 1–65535 的端口。" >&2; exit 2;
+  }
+  PORT=$((10#$PORT))
+  [[ ! -f "$AUTH_TRANSACTION" ]] || { echo "请先确认或回滚认证变更。" >&2; exit 1; }
+  if [[ ! -x "$SSHD_BIN" ]] || ! command -v ip >/dev/null || ! command -v ss >/dev/null; then
+    [[ "$ACTION" != reconcile ]] || exit 0
+    command -v apt-get >/dev/null || { echo "仅支持 Debian / Ubuntu。" >&2; exit 1; }
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y openssh-server iproute2
   fi
-  if ! command -v apt-get >/dev/null 2>&1; then
-    echo "本脚本仅支持 Debian 和 Ubuntu。" >&2
-    exit 1
+  [[ -n "$(managed_addresses)" ]] || { echo "没有找到允许网段对应的本机 IPv4 地址；保留原配置。" >&2; exit 1; }
+  local transaction socket_mode=0 service_changed=0 firewall_changed=0 completed=0
+  local old_active=0 old_enabled=0 old_socket_active=0 old_socket_enabled=0
+  local old_timer_active=0 old_timer_enabled=0 candidate index
+  "$SYSTEMCTL_BIN" is-active --quiet ssh && old_active=1
+  "$SYSTEMCTL_BIN" is-enabled --quiet ssh && old_enabled=1
+  "$SYSTEMCTL_BIN" is-active --quiet ssh.socket && old_socket_active=1
+  "$SYSTEMCTL_BIN" is-enabled --quiet ssh.socket && old_socket_enabled=1
+  "$SYSTEMCTL_BIN" is-active --quiet "$RECOVERY_UNIT.timer" && old_timer_active=1
+  "$SYSTEMCTL_BIN" is-enabled --quiet "$RECOVERY_UNIT.timer" && old_timer_enabled=1
+  socket_in_use && socket_mode=1
+  transaction="$(mktemp -d)"
+  chmod 0700 "$transaction"
+  local -a files=("$MANAGED_CONFIG" "$MAIN_CONFIG" "$SOCKET_CONFIG" "$RECOVERY_SCRIPT" "$UNIT_DIR/$RECOVERY_UNIT.service" "$UNIT_DIR/$RECOVERY_UNIT.timer")
+  for index in "${!files[@]}"; do
+    [[ ! -e "${files[$index]}" ]] || cp -a "${files[$index]}" "$transaction/$index"
+  done
+  rollback_network() {
+    local result=$? failed=0 index
+    trap - EXIT
+    if ((completed == 0)); then
+      set +e
+      if ((firewall_changed)); then remove_firewall_rule || failed=1; fi
+      for index in "${!files[@]}"; do
+        restore_file "${files[$index]}" "$transaction/$index" || failed=1
+      done
+      if ((firewall_changed)); then apply_managed_firewall "$MANAGED_CONFIG" || failed=1; fi
+      "$SYSTEMCTL_BIN" daemon-reload || failed=1
+      if ((service_changed)); then
+        if [[ "$("$SYSTEMCTL_BIN" show ssh.socket -p LoadState --value)" != "not-found" ]]; then
+          if ((old_socket_enabled)); then "$SYSTEMCTL_BIN" enable ssh.socket; else "$SYSTEMCTL_BIN" disable ssh.socket; fi || failed=1
+          if ((old_socket_active)); then "$SYSTEMCTL_BIN" restart ssh.socket; else "$SYSTEMCTL_BIN" stop ssh.socket; fi || failed=1
+        fi
+        if ((old_enabled)); then "$SYSTEMCTL_BIN" enable ssh; else "$SYSTEMCTL_BIN" disable ssh; fi || failed=1
+        if ((old_active)); then "$SYSTEMCTL_BIN" restart ssh; else "$SYSTEMCTL_BIN" stop ssh; fi || failed=1
+      fi
+      if [[ "$("$SYSTEMCTL_BIN" show "$RECOVERY_UNIT.timer" -p LoadState --value)" != "not-found" ]]; then
+        if ((old_timer_enabled)); then "$SYSTEMCTL_BIN" enable "$RECOVERY_UNIT.timer"; else "$SYSTEMCTL_BIN" disable "$RECOVERY_UNIT.timer"; fi || failed=1
+        if ((old_timer_active)); then "$SYSTEMCTL_BIN" restart "$RECOVERY_UNIT.timer"; else "$SYSTEMCTL_BIN" stop "$RECOVERY_UNIT.timer"; fi || failed=1
+      fi
+      echo "应用失败，已尝试恢复原配置、SSH 状态和允许网段规则；备份：$transaction" >&2
+      ((failed == 0)) || echo "回滚存在错误，请保留当前连接并检查备份。" >&2
+      exit "$result"
+    fi
+    rm -rf -- "$transaction"
+  }
+  trap rollback_network EXIT
+  candidate="$transaction/candidate"
+  write_network_config >"$candidate"
+  if cmp -s "$candidate" "$MANAGED_CONFIG" && listeners_match &&
+      "$SYSTEMCTL_BIN" is-active --quiet ssh &&
+      "$SYSTEMCTL_BIN" is-enabled --quiet ssh &&
+      { ((socket_mode == 0)) || cmp -s <(write_socket_config) "$SOCKET_CONFIG"; }; then
+    if [[ "$ACTION" != reconcile ]]; then install_network_recovery; fi
+    completed=1
+    echo "配置与监听未变化，跳过安装和 SSH 重启。"
+    exit 0
   fi
-
-  echo "[1/5] 安装系统自带 OpenSSH Server..."
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update
-  apt-get install -y openssh-server iproute2
-
-  echo "[2/5] 检查允许网段对应的本机地址..."
-  local backup main_backup rule cidr address deny_pattern="*"
-  local -a addresses=()
-  mapfile -t addresses < <(managed_addresses)
-  ((${#addresses[@]} > 0)) || { echo "没有找到允许网段对应的本机 IPv4 地址。" >&2; exit 1; }
-
-  echo "[3/5] 清理旧入口并设置端口 $PORT..."
-  remove_firewall_rule
-  install -d -m 0755 /etc/ssh/sshd_config.d
-  backup=""
-  if [[ -f "$MANAGED_CONFIG" ]]; then
-    backup="${MANAGED_CONFIG}.bak.$(date +%Y%m%d%H%M%S)"
-    cp -a "$MANAGED_CONFIG" "$backup"
-  fi
-  {
-    echo '# 由 server-kit 管理：只监听允许网段对应的本机地址'
-    echo "Port $PORT"
-    for address in "${addresses[@]}"; do echo "ListenAddress $address"; done
-    while IFS= read -r cidr; do deny_pattern+=",!$cidr"; done < <(allowed_networks)
-    echo "Match Address $deny_pattern"
-    echo '    DenyUsers *'
-    echo 'Match all'
-  } >"$MANAGED_CONFIG"
-  chmod 0644 "$MANAGED_CONFIG"
-  if ! grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config; then
-    main_backup="/etc/ssh/sshd_config.server-kit.bak.$(date +%Y%m%d%H%M%S)"
-    cp -a /etc/ssh/sshd_config "$main_backup"
-    sed -i '1iInclude /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
+  install -d -m 0755 "$(dirname "$MANAGED_CONFIG")"
+  install -m 0644 "$candidate" "$MANAGED_CONFIG"
+  if ! grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' "$MAIN_CONFIG"; then
+    sed -i '1iInclude /etc/ssh/sshd_config.d/*.conf' "$MAIN_CONFIG"
   fi
   prepare_sshd_runtime_dir
-  if ! "$SSHD_BIN" -t; then
-    if [[ -n "$backup" ]]; then cp -a "$backup" "$MANAGED_CONFIG"; else rm -f "$MANAGED_CONFIG"; fi
-    echo "OpenSSH 配置校验失败，已经恢复旧配置。" >&2
-    exit 1
+  "$SSHD_BIN" -t
+  validate_effective_listeners
+  if ((socket_mode)); then
+    install -d -m 0755 "$(dirname "$SOCKET_CONFIG")"
+    write_socket_config >"$SOCKET_CONFIG"
+    chmod 0644 "$SOCKET_CONFIG"
   fi
+  # Add new restricted rules before switching, retaining the old rules until verified.
+  firewall_changed=1
+  apply_managed_firewall "$MANAGED_CONFIG"
+  service_changed=1
+  "$SYSTEMCTL_BIN" daemon-reload
+  "$SYSTEMCTL_BIN" enable ssh
+  if ((socket_mode)); then
+    "$SYSTEMCTL_BIN" enable ssh.socket
+    "$SYSTEMCTL_BIN" restart ssh.socket
+  fi
+  "$SYSTEMCTL_BIN" restart ssh
+  local attempt
+  for attempt in {1..20}; do listeners_match && break; sleep 0.1; done
+  listeners_match || { echo "实际监听与目标不一致，拒绝报告成功。" >&2; exit 1; }
+  remove_firewall_rule
+  apply_managed_firewall "$MANAGED_CONFIG"
+  if [[ "$ACTION" != reconcile ]]; then install_network_recovery; fi
+  completed=1
+  echo "完成：SSH 配置与实际监听已验证，端口 $PORT。"
+)
 
-  echo "[4/5] 启动 SSH 并设置开机自启..."
-  systemctl enable ssh
-  if ! systemctl restart ssh; then
-    if [[ -n "$backup" ]]; then cp -a "$backup" "$MANAGED_CONFIG"; else rm -f "$MANAGED_CONFIG"; fi
-    systemctl restart ssh || true
-    echo "新配置启动失败，已经恢复旧配置。" >&2
-    exit 1
-  fi
-
-  echo "[5/5] 应用 SSH 允许来源网段..."
-  install -d -m 0700 "$(dirname "$FIREWALL_STATE")"
-  : >"$FIREWALL_STATE"; chmod 0600 "$FIREWALL_STATE"
-  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
-    while IFS= read -r cidr; do
-      for address in "${addresses[@]}"; do
-        rule="rule family=ipv4 source address=$cidr destination address=$address port port=$PORT protocol=tcp accept"
-        firewall-cmd --permanent --add-rich-rule="$rule"
-        printf 'firewalld\t%s\n' "$rule" >>"$FIREWALL_STATE"
-      done
-    done < <(allowed_networks)
-    firewall-cmd --reload
-  elif command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
-    while IFS= read -r cidr; do
-      for address in "${addresses[@]}"; do
-        ufw allow from "$cidr" to "$address" port "$PORT" proto tcp comment 'server-kit SSH allowed'
-      done
-    done < <(allowed_networks)
-  else
-    echo "未检测到启用中的 UFW 或 firewalld；SSH 仍只监听允许网段对应的本机地址。"
-  fi
-  echo "完成：SSH 正在 ${addresses[*]} 的 ${PORT} 端口监听。"
-  show_status
+reconcile_network() {
+  require_root
+  [[ -f "$MANAGED_CONFIG" && ! -f "$AUTH_TRANSACTION" ]] || return 0
+  "$SYSTEMCTL_BIN" is-enabled --quiet ssh || return 0
+  [[ -n "$(managed_addresses)" ]] || return 0
+  PORT="$(configured_value Port)"
+  enable_ssh
 }
 
 disable_ssh() {
   require_root
-  echo "[1/2] 删除 SSH 允许网段防火墙规则..."
+  if [[ "$("$SYSTEMCTL_BIN" show "$RECOVERY_UNIT.timer" -p LoadState --value)" != "not-found" ]]; then
+    "$SYSTEMCTL_BIN" disable --now "$RECOVERY_UNIT.timer"
+  fi
+  if [[ "$("$SYSTEMCTL_BIN" show ssh.socket -p LoadState --value)" != "not-found" ]]; then
+    "$SYSTEMCTL_BIN" disable --now ssh.socket
+  fi
+  "$SYSTEMCTL_BIN" disable --now ssh
+  if "$SYSTEMCTL_BIN" is-active --quiet ssh || "$SYSTEMCTL_BIN" is-active --quiet ssh.socket; then
+    echo "SSH 尚未完全停止。" >&2; return 1
+  fi
   remove_firewall_rule
-  echo "[2/2] 停止 SSH 并禁止开机自启..."
-  systemctl disable --now ssh || true
-  echo "完成：SSH 服务和对应防火墙入口都已关闭。"
-  show_status
+  echo "完成：SSH 服务、socket 和自动恢复均已关闭。"
 }
 
-invoke_action() {
+invoke_action() (
+  # Serialize menu actions, authentication changes and timer reconciliation.
+  if [[ "$1" == enable || "$1" == disable || "$1" == reconcile || "$1" == network-add || "$1" == network-remove || "$1" == auth-harden || "$1" == auth-confirm || "$1" == auth-rollback ]]; then
+    require_root
+    install -d -m 0700 "$AUTH_STATE_DIR"
+    exec 9>"$AUTH_STATE_DIR/network.lock"
+    flock -w 10 9 || return 1
+  fi
   case "$1" in
+    reconcile) reconcile_network ;;
     enable) enable_ssh ;;
     disable) disable_ssh ;;
     status) show_status ;;
@@ -601,7 +760,7 @@ invoke_action() {
     network-remove) remove_network ;;
     *) usage; return 2 ;;
   esac
-}
+)
 
 write_menu() {
   echo "server-kit · Linux SSH 管理"
@@ -667,4 +826,6 @@ show_menu() {
   done
 }
 
-if [[ "$ACTION" == "menu" ]]; then show_menu; else invoke_action "$ACTION"; fi
+if [[ "${SERVER_KIT_LIBRARY_ONLY:-0}" != 1 ]]; then
+  if [[ "$ACTION" == "menu" ]]; then show_menu; else invoke_action "$ACTION"; fi
+fi

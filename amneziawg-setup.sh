@@ -633,28 +633,62 @@ change_access_policy() {
   local client="$2"
   shift 2
   local helper="${SCRIPT_DIR}/lib/awg_access.py"
-  load_state
-  ensure_layout
+  local active_backup=""
+  local active_existed=0
+  local rollback_failed=0
+  local -a helper_arguments=(change "${operation}" "${client}" "$@")
+  load_state || return 1
+  ensure_layout || return 1
   [[ -r "${helper}" ]] || { echo "缺少 AWG 访问策略模块。" >&2; return 1; }
-  python3 "${helper}" \
+  if [[ "${operation}" == "allow-batch" ]]; then
+    helper_arguments=(allow-batch "${client}")
+  fi
+  # Snapshot before staging so commit failures can restore both persisted and live policy.
+  active_backup="$(mktemp "${AWG_ACCESS_PATH}.backup.XXXXXX")" || return 1
+  if [[ -e "${AWG_ACCESS_PATH}" ]]; then
+    active_existed=1
+    cp -p -- "${AWG_ACCESS_PATH}" "${active_backup}" || { rm -f -- "${active_backup}"; return 1; }
+  fi
+  if ! python3 "${helper}" \
     --active "${AWG_ACCESS_PATH}" --pending "${AWG_ACCESS_PENDING_PATH}" \
     --peers "${PEER_DB}" --server-ip "${AWG_SERVER_IP}" --network-cidr "${AWG_SUBNET_CIDR}" \
-    change "${operation}" "${client}" "$@"
+    "${helper_arguments[@]}"; then
+    rm -f -- "${active_backup}"
+    return 1
+  fi
   if ! render_nft_rules "${AWG_ACCESS_PENDING_PATH}" || \
      { [[ "${DRY_RUN}" != "1" ]] && ! nft --check -f "${NFT_RULES_PATH}"; } || \
-     { [[ "${DRY_RUN}" != "1" ]] && ! nft -f "${NFT_RULES_PATH}"; }; then
+     { [[ "${DRY_RUN}" != "1" ]] && ! nft -f "${NFT_RULES_PATH}"; } || \
+     ! python3 "${helper}" \
+       --active "${AWG_ACCESS_PATH}" --pending "${AWG_ACCESS_PENDING_PATH}" \
+       --peers "${PEER_DB}" --server-ip "${AWG_SERVER_IP}" --network-cidr "${AWG_SUBNET_CIDR}" commit; then
+    if [[ "${active_existed}" == "1" ]]; then
+      cp -p -- "${active_backup}" "${AWG_ACCESS_PATH}" || {
+        echo 'SERVER_KIT_DIAGNOSTIC:permission_recovery_required' >&2
+        echo "无法恢复活动策略；保留备份：${active_backup}" >&2; return 1;
+      }
+    else
+      rm -f -- "${AWG_ACCESS_PATH}"
+    fi
     python3 "${helper}" \
       --active "${AWG_ACCESS_PATH}" --pending "${AWG_ACCESS_PENDING_PATH}" \
-      --peers "${PEER_DB}" --server-ip "${AWG_SERVER_IP}" --network-cidr "${AWG_SUBNET_CIDR}" discard >/dev/null 2>&1 || true
-    render_nft_rules "${AWG_ACCESS_PATH}" >/dev/null 2>&1 || true
-    [[ "${DRY_RUN}" == "1" ]] || nft -f "${NFT_RULES_PATH}" >/dev/null 2>&1 || true
+      --peers "${PEER_DB}" --server-ip "${AWG_SERVER_IP}" --network-cidr "${AWG_SUBNET_CIDR}" discard >/dev/null 2>&1 || rollback_failed=1
+    if ! render_nft_rules "${AWG_ACCESS_PATH}" >/dev/null 2>&1; then
+      rollback_failed=1
+    elif [[ "${DRY_RUN}" != "1" ]] && ! nft -f "${NFT_RULES_PATH}" >/dev/null 2>&1; then
+      rollback_failed=1
+    fi
+    if [[ "${rollback_failed}" == "1" ]]; then
+      echo 'SERVER_KIT_DIAGNOSTIC:permission_recovery_required' >&2
+      echo "AWG 策略恢复未完成，需要人工核验；保留原策略备份：${active_backup}" >&2
+      return 1
+    fi
+    rm -f -- "${active_backup}"
     echo "AWG 访问策略应用失败，已恢复原策略。" >&2
     return 1
   fi
-  python3 "${helper}" \
-    --active "${AWG_ACCESS_PATH}" --pending "${AWG_ACCESS_PENDING_PATH}" \
-    --peers "${PEER_DB}" --server-ip "${AWG_SERVER_IP}" --network-cidr "${AWG_SUBNET_CIDR}" commit
-  record_audit "access-${operation}" "${client}" "-"
+  rm -f -- "${active_backup}"
+  record_audit "access-${operation}" "${client}" "-" || echo "警告：策略已生效，但写入审计失败。" >&2
   green "已更新普通节点访问策略：${client}"
 }
 
@@ -1341,8 +1375,8 @@ usage() {
   bash $0 audit
 
 访问控制（目标与端口独立；省略端口表示全部端口）：
-  bash $0 access-allow <节点> <目标节点|vps|all> [端口,端口] [tcp|udp]
-  bash $0 access-deny <节点> <目标节点|vps|all> [端口,端口] [all|tcp|udp]
+  bash $0 access-allow <节点> <目标节点|vps|all> [端口列表或范围，如22,8000-8010] [tcp|udp]
+  bash $0 access-deny <节点> <目标节点|vps|all> [端口列表或范围，如22,8000-8010] [all|tcp|udp]
 
 服务：
   bash $0 start|stop|restart|status
@@ -1383,6 +1417,10 @@ main() {
       ;;
     show-obfuscation) show_obfuscation ;;
     access-mode) change_access_policy mode "${2:-}" "${3:-}" ;;
+    access-allow-batch)
+      [[ -n "${2:-}" && $# -eq 2 ]] || { echo "用法：access-allow-batch <节点>（JSON 规则从标准输入读取）" >&2; return 1; }
+      change_access_policy allow-batch "${2}"
+      ;;
     access-allow)
       if [[ -z "${4:-}" ]]; then
         change_access_policy allow "${2:-}" "${3:-}"

@@ -3,9 +3,11 @@
 from urllib.parse import urlencode, urlsplit
 
 from django.conf import settings
-from django.http import HttpResponseRedirect
+from django.http import HttpResponseRedirect, JsonResponse
 from django.shortcuts import resolve_url
+from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
+from django.utils.cache import add_never_cache_headers
 
 
 class SafeExpiredPostMiddleware:
@@ -23,6 +25,14 @@ class SafeExpiredPostMiddleware:
             and request.path != login_path
             and not request.user.is_authenticated
         ):
+            if request.path in {
+                reverse("network-permission-batch-preview"),
+                reverse("network-permission-batch-execute"),
+                reverse("inline-task-execute"),
+            }:
+                response = JsonResponse({"error": "登录已失效，请重新登录后继续。"}, status=401)
+                add_never_cache_headers(response)
+                return response
             target = "/"
             referer = request.META.get("HTTP_REFERER", "")
             if referer and url_has_allowed_host_and_scheme(

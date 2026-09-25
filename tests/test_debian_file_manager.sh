@@ -125,6 +125,26 @@ rules:
 YAML
 verify_clash_vless_relay_bundle "${relay_bundle_test_dir}" "${relay_bundle_test_dir}/relay.json" ||
   fail "包含 VLESS 服务端转发节点的订阅未通过发布校验"
+python3 - "${relay_bundle_test_dir}/clash-test.yaml" <<'PYTHON'
+import sys
+from pathlib import Path
+from ruamel.yaml import YAML
+path = Path(sys.argv[1])
+yaml = YAML()
+yaml.preserve_quotes = True
+config = yaml.load(path.read_text())
+config["proxies"].append({"name": "PRIVATE-test", "type": "vless", "server": "vpn.example.com", "port": 443})
+group = config["proxy-groups"][-1]
+group.update({"proxies": ["REJECT"], "empty-fallback": "REJECT", "filter": "(?i)DE|^REJECT$"})
+with path.open("w") as handle:
+    yaml.dump(config, handle)
+PYTHON
+verify_clash_vless_relay_bundle "${relay_bundle_test_dir}" "${relay_bundle_test_dir}/relay.json" ||
+  fail "Stash 空机场拒绝保护未通过发布校验"
+sed -i.bak 's/filter: .*/filter: .*/' "${relay_bundle_test_dir}/clash-test.yaml"
+if verify_clash_vless_relay_bundle "${relay_bundle_test_dir}" "${relay_bundle_test_dir}/relay.json" >/dev/null 2>&1; then
+  fail "会接受 DIRECT 占位节点的 Stash 过滤器仍通过发布校验"
+fi
 sed -i.bak '/SERVER.RELAY.VLESS/d' "${relay_bundle_test_dir}/clash-test.yaml"
 if verify_clash_vless_relay_bundle "${relay_bundle_test_dir}" "${relay_bundle_test_dir}/relay.json" >/dev/null 2>&1; then
   fail "缺少 VLESS 服务端转发节点的订阅仍通过发布校验"
@@ -139,8 +159,7 @@ validate_port "65535" || fail "端口 65535 应当有效"
 ! validate_port "65536" || fail "端口 65536 应当无效"
 ! validate_port "443x" || fail "非数字端口应当无效"
 
-# Synthetic 64-character hexadecimal fixture, never a deployment token.
-valid_token="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+valid_token="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 validate_token "${valid_token}" || fail "64 位十六进制密钥应当有效"
 ! validate_token "${valid_token}00" || fail "超过 64 位的密钥应当无效"
 ! validate_token "${valid_token^^}" || fail "大写密钥不应通过规范校验"
@@ -150,7 +169,7 @@ validate_download_name "示例 文件.tar.gz" || fail "普通下载文件名应�
 ! validate_download_name ".." || fail "上级目录名称应当无效"
 validate_public_ipv4 "8.8.8.8" || fail "公网 IPv4 应当通过证书地址校验"
 ! validate_public_ipv4 "10.0.0.1" || fail "私有 IPv4 不应通过证书地址校验"
-validate_public_address "vpn.duckdns.org" || fail "有效发布域名应当通过地址校验"
+validate_public_address "gateway-demo.duckdns.org" || fail "有效发布域名应当通过地址校验"
 ! validate_public_address "not_a_domain" || fail "无效发布域名不应通过地址校验"
 
 # 回归检查：Clash 远程订阅必须使用受公共根信任的公网 IP 证书。
@@ -208,9 +227,9 @@ grep -Fxq -- 'shortlived' "${certbot_args_log}" || fail "Certbot 没有请求短
 grep -Fxq -- '--ip-address' "${certbot_args_log}" || fail "Certbot 没有使用公网 IP 参数"
 grep -Fxq -- '8.8.8.8' "${certbot_args_log}" || fail "Certbot 没有收到目标公网 IP"
 
-request_public_certificate "vpn.duckdns.org"
+request_public_certificate "gateway-demo.duckdns.org"
 grep -Fxq -- '--domains' "${certbot_args_log}" || fail "Certbot 没有使用域名参数"
-grep -Fxq -- 'vpn.duckdns.org' "${certbot_args_log}" || fail "Certbot 没有收到发布域名"
+grep -Fxq -- 'gateway-demo.duckdns.org' "${certbot_args_log}" || fail "Certbot 没有收到发布域名"
 if grep -Fxq -- '--ip-address' "${certbot_args_log}"; then
   fail "域名证书错误使用了公网 IP 参数"
 fi

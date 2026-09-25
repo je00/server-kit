@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from control_plane.errors import TaskExecutionError
 from lib.server_kit_audit import append_audit
+from lib.server_kit_permission_batch import normalize_rules
 
 
 CHANGEABLE_SERVICE_IDS = frozenset({"clash", "file", "mosh"})
@@ -1256,6 +1257,38 @@ class ScriptRunner:
             self._append_audit(actor, "network", audit_operation, "failed")
             raise RuntimeError("权限操作响应版本不受支持")
         self._append_audit(actor, "network", audit_operation, "success")
+        return payload
+
+    def add_network_permissions(
+        self, client: str, rules: list[dict[str, str]], actor: str,
+    ) -> dict[str, Any]:
+        if not isinstance(client, str) or not NODE_NAME_PATTERN.fullmatch(client) or not actor or len(actor) > 150:
+            raise ValueError("权限参数格式不正确")
+        rules = normalize_rules(rules)
+        arguments = ["network", "permission", "batch", client, "--json"]
+        try:
+            completed = self._run(arguments, 180.0, json.dumps(rules, ensure_ascii=False))
+        except subprocess.TimeoutExpired as exc:
+            self._append_audit(actor, "network", "permission_batch", "timeout")
+            raise RuntimeError("批量权限操作超时，请重新读取实际状态") from exc
+        if completed.returncode != 0:
+            self._append_audit(actor, "network", "permission_batch", "failed")
+            if "SERVER_KIT_DIAGNOSTIC:permission_recovery_required" in completed.stderr.splitlines():
+                raise TaskExecutionError(
+                    "permission_recovery_required",
+                    "批量权限应用失败，自动恢复未能完成。请不要重复提交；使用现有管理连接检查服务与保留的策略备份。",
+                )
+            raise TaskExecutionError("permission_batch_failed", "批量权限操作失败；请重新读取实际状态后重新预览。")
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            self._append_audit(actor, "network", "permission_batch", "failed")
+            raise RuntimeError("批量权限操作响应无效") from exc
+        expected = {"schema_version": 1, "operation": "batch", "client": client}
+        if payload != expected:
+            self._append_audit(actor, "network", "permission_batch", "failed")
+            raise RuntimeError("批量权限操作响应版本不受支持")
+        self._append_audit(actor, "network", "permission_batch", "success")
         return payload
 
     def change_service(

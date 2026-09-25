@@ -98,8 +98,8 @@ class ClashAirportProjectionTests(unittest.TestCase):
         )
         udp_rule_index = config["rules"].index("NETWORK,udp,PROXY")
         self.assertEqual(config["rules"][udp_rule_index + 1], "NETWORK,udp,REJECT")
-        self.assertNotIn("IP-CIDR,203.0.113.10/32,DIRECT,no-resolve", config["rules"])
-        self.assertNotIn("IP-CIDR,198.51.100.20/32,DIRECT,no-resolve", config["rules"])
+        self.assertNotIn("IP-CIDR,203.0.113.188/32,DIRECT,no-resolve", config["rules"])
+        self.assertNotIn("IP-CIDR,198.51.100.167/32,DIRECT,no-resolve", config["rules"])
 
     def test_all_country_has_no_filter_and_empty_selection_keeps_valid_proxy(self) -> None:
         config = self.config()

@@ -5,10 +5,11 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 MANAGER="${ROOT_DIR}/web/dashboard/script_templates/server-kit-ssh-linux.sh"
 TEST_DIR="$(mktemp -d)"
-trap 'rm -f "${TEST_DIR}/networks" "${TEST_DIR}/sshd.conf"; rmdir "${TEST_DIR}" 2>/dev/null || true' EXIT
+trap 'rm -rf -- "$TEST_DIR"' EXIT
 
 run_manager() {
   SERVER_KIT_TESTING=1 \
+  SERVER_KIT_SSH_AUTH_STATE_DIR="${TEST_DIR}/state" \
   SERVER_KIT_SSH_NETWORKS_FILE="${TEST_DIR}/networks" \
   SERVER_KIT_SSH_CONFIG="${TEST_DIR}/sshd.conf" \
   bash "$MANAGER" "$@"

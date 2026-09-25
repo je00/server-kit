@@ -1,18 +1,22 @@
 {% extends "base.html" %}
+{% load static %}
 {% block title %}文件资源 · server-kit{% endblock %}
+{% block extra_head %}<script src="{% static 'uploads.js' %}" defer></script>{% endblock %}
 {% block body %}
+{% if files.items %}{% include "dashboard/_sensitive_auth_modal.html" with sensitive_auth_destination="files" %}{% endif %}
 <div class="app-shell">
   {% include "dashboard/_navigation.html" %}
-  <main class="content detail-content">
+  <main id="main-content" tabindex="-1" class="content detail-content">
+    <header class="page-header"><div><p class="eyebrow">普通文件发布</p><h1>文件资源</h1><p class="muted">每个文件使用独立访问令牌，支持断点续传和 CDN 缓存。</p></div><span class="status-pill state-pill state-{{ file_service.state }}">{% if snapshot_error %}状态未知{% else %}{{ file_service.state }}{% endif %}</span></header>
     {% include "dashboard/_messages.html" %}
-    <header class="page-header"><div><p class="eyebrow">普通文件发布</p><h1>文件资源</h1><p class="muted">每个文件使用独立访问令牌，支持断点续传和 CDN 缓存。</p></div><span class="status-pill state-pill state-{{ file_service.state }}">{{ file_service.state }}</span></header>
-    {% if snapshot_error %}<div class="alert danger">{{ snapshot_error }}</div>{% endif %}
+    {% if snapshot_error %}<div class="alert danger" role="alert">{{ snapshot_error }}</div><section class="empty-state"><h2>无法加载当前状态</h2><p>暂不显示资源数量和变更操作；已有服务不受此页面读取失败影响。</p><a class="secondary-button" href="{% url 'file-resources' %}">重新加载</a></section>{% else %}
+    {% if not files.configured and not snapshot_error %}<div class="alert neutral"><span>文件发布服务尚未配置。完成部署后，即可上传文件并生成下载链接。</span>{% if request.user.is_superuser %}<a class="secondary-button compact-button" href="{% url 'deployment-wizard' %}">前往部署向导</a>{% endif %}</div>{% endif %}
     {% if files.configured and not service_running %}<div class="alert neutral service-state-alert"><span>配置和文件仍保留，但服务当前为“{{ file_service.state }}”，所有下载链接暂不可用。</span><a class="secondary-button compact-button" href="{% url 'service-detail' 'file' %}">查看并启动服务</a></div>{% endif %}
 
     {% if request.user.is_superuser and files.configured %}
     <section class="inventory-panel">
       <div class="section-heading"><div><p class="eyebrow">新增资源</p><h2>上传并发布</h2></div><span class="muted">最大 {{ max_upload_label }}</span></div>
-      <form class="resource-upload-form" method="post" action="{% url 'file-resource-add' %}" enctype="multipart/form-data">
+      <form class="resource-upload-form" method="post" action="{% url 'file-resource-add' %}" enctype="multipart/form-data" data-upload-form data-max-upload-bytes="{{ max_upload_bytes }}" data-upload-return-url="{% url 'file-resources' %}">
         {% csrf_token %}
         <label>选择文件<input type="file" name="payload" required></label>
         <label>下载文件名（可留空）<input type="text" name="download_name" maxlength="128" placeholder="默认使用上传文件名"></label>
@@ -21,6 +25,15 @@
         <label>当前账号密码<input type="password" name="password" required autocomplete="current-password"></label>
         <input type="hidden" name="confirmed" value="yes">
         <button class="primary-button" type="submit">上传并发布</button>
+        <section class="upload-progress-panel" data-upload-progress hidden aria-label="上传进度">
+          <progress class="upload-progress-track" data-upload-meter max="100" value="0" aria-label="文件上传进度"></progress>
+          <p data-upload-status role="status" aria-live="polite" tabindex="-1"></p>
+          <p class="form-error" data-upload-error role="alert" hidden></p>
+          <div class="inline-actions" data-upload-recovery hidden>
+            <a class="text-link" href="{% url 'task-audit' %}" target="_blank" rel="noopener">在新页检查任务记录</a>
+            <button class="secondary-button compact-button" type="button" data-upload-acknowledge>已检查，允许重新提交</button>
+          </div>
+        </section>
       </form>
       <p class="privacy-note">上传内容直接流入磁盘，不会整体载入管理网站内存。缓存链接包含访问令牌，请只交给可信 CDN。</p>
     </section>
@@ -28,23 +41,24 @@
 
     <section class="inventory-panel">
       <div class="section-heading"><div><p class="eyebrow">已保存资源</p><h2>{{ files.items|length }} 个文件</h2></div></div>
-      {% if request.user.is_superuser and not sensitive_unlocked %}
-      <form class="unlock-row" method="post" action="{% url 'sensitive-unlock' %}">{% csrf_token %}<input type="hidden" name="destination" value="files"><label>查看链接和二维码<input type="password" name="password" required autocomplete="current-password" placeholder="输入当前账号密码"></label><button class="secondary-button compact-button" type="submit">解锁 5 分钟</button></form>
+      {% if request.user.is_superuser and files.items and not sensitive_unlocked %}
+      <p class="privacy-note">点击复制链接或显示二维码时验证密码，5 分钟内无需重复验证；当前编辑和上传内容不会被清空。</p>
       {% endif %}
       <div class="inventory-list">
         {% for item in files.items %}
         <article><div><strong>{{ item.name }}</strong><p>{{ item.size_label }} · {{ item.cache_label }}</p></div><div class="item-tools">
           <span class="item-state">{% if service_running %}可下载{% else %}暂不可下载{% endif %}</span>
           <div class="item-actions">
-            {% if request.user.is_superuser and sensitive_unlocked %}<form>{% csrf_token %}<button class="copy-button" type="button" data-secret-action="copy" data-endpoint="{% url 'file-resource-secret' item.resource_id 'link' %}">复制链接</button></form><form>{% csrf_token %}<button class="copy-button qr-button" type="button" data-secret-action="qr" data-endpoint="{% url 'file-resource-secret' item.resource_id 'qr' %}">显示二维码</button></form>{% endif %}
+            {% if request.user.is_superuser %}<form>{% csrf_token %}<button class="copy-button" type="button" data-secret-action="copy" data-endpoint="{% url 'file-resource-secret' item.resource_id 'link' %}">复制链接</button></form><form>{% csrf_token %}<button class="copy-button qr-button" type="button" data-secret-action="qr" data-endpoint="{% url 'file-resource-secret' item.resource_id 'qr' %}">显示二维码</button></form>{% endif %}
             {% if request.user.is_superuser %}<form method="post" action="{% url 'file-resource-delete-preview' item.resource_id %}">{% csrf_token %}<button class="copy-button danger-quiet" type="submit">删除</button></form>{% endif %}
           </div>
         </div></article>
-        {% empty %}<p class="muted">暂无文件资源，可以从上方上传第一份文件。</p>{% endfor %}
+        {% empty %}<div class="empty-state compact-empty"><strong>还没有文件资源</strong><p>{% if request.user.is_superuser and files.configured %}从上方上传第一份文件，发布成功后即可获取链接。{% else %}管理员发布文件后将在这里显示。{% endif %}</p></div>{% endfor %}
       </div>
       <p class="privacy-note">删除源站文件不会主动清除第三方 CDN 缓存；缓存副本最迟在所设有效期结束后失效。</p>
     </section>
+  {% endif %}
   </main>
 </div>
-{% if request.user.is_superuser %}<div class="qr-modal" data-qr-modal hidden><div class="qr-backdrop" data-qr-close></div><section class="qr-dialog" role="dialog" aria-modal="true" aria-labelledby="file-qr-title"><button class="qr-close" type="button" data-qr-close aria-label="关闭">×</button><p class="eyebrow">文件资源</p><h2 id="file-qr-title" data-qr-title>下载二维码</h2><div class="qr-frame"><img class="qr-image" data-qr-image alt=""></div><p class="qr-note">二维码包含访问令牌。关闭后立即从页面移除。</p></section></div>{% endif %}
+{% if request.user.is_superuser %}<div class="qr-modal" data-qr-modal hidden><button class="qr-backdrop" type="button" data-qr-close aria-label="关闭二维码"></button><section class="qr-dialog" role="dialog" aria-modal="true" aria-labelledby="file-qr-title"><button class="qr-close" type="button" data-qr-close aria-label="关闭">×</button><p class="eyebrow">文件资源</p><h2 id="file-qr-title" data-qr-title>下载二维码</h2><div class="qr-frame"><img class="qr-image" data-qr-image alt=""></div><p class="qr-note">二维码包含访问令牌。关闭后立即从页面移除。</p></section></div>{% endif %}
 {% endblock %}

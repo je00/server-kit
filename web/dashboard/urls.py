@@ -2,7 +2,7 @@
 
 from django.urls import path
 
-from . import views
+from . import inline_tasks, views
 
 
 urlpatterns = [
@@ -23,6 +23,8 @@ urlpatterns = [
     path("audit/", views.task_audit, name="task-audit"),
     path("tasks/<str:task_id>/", views.change_task_detail, name="change-task-detail"),
     path("tasks/<str:task_id>/cancel/", views.change_task_cancel, name="change-task-cancel"),
+    path("inline-tasks/execute/", inline_tasks.execute, name="inline-task-execute"),
+    path("inline-tasks/<str:task_id>/", inline_tasks.status, name="inline-task-status"),
     path("accounts/", views.accounts, name="accounts"),
     path("deploy/", views.deployment_wizard, name="deployment-wizard"),
     path("healthz", views.health, name="health"),
@@ -54,6 +56,9 @@ urlpatterns = [
     path("network/duckdns/execute/", views.network_duckdns_execute, name="network-duckdns-execute"),
     path("network/permissions/preview/", views.network_permission_preview, name="network-permission-preview"),
     path("network/permissions/execute/", views.network_permission_execute, name="network-permission-execute"),
+    path("network/permissions/batch/preview/", views.network_permission_batch_preview, name="network-permission-batch-preview"),
+    path("network/permissions/batch/execute/", views.network_permission_batch_execute, name="network-permission-batch-execute"),
+    path("network/permissions/batch/<str:task_id>/", views.network_permission_batch_status, name="network-permission-batch-status"),
     path("network/subscriptions/", views.network_subscriptions, name="network-subscriptions"),
     path("network/proxy/", views.network_proxy_resources, name="network-proxy-resources"),
     path("network/proxy/execute/", views.network_proxy_resource_execute, name="network-proxy-resource-execute"),

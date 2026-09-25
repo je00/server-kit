@@ -148,7 +148,7 @@ class ExitDNSLifecycleTests(unittest.TestCase):
     def test_rejects_gateway_alias_with_any_private_answer(self):
         value = worker(25001)
         value["outbounds"] = [{"protocol": "socks", "settings": {
-            "servers": [{"address": "proxy.example", "port": 45001}],
+            "servers": [{"address": "proxy.example", "port": 8001}],
         }}]
         self.run.return_value.stdout = b'["1.1.1.1", "127.0.0.1"]'
         with self.assertRaisesRegex(ExitDNSLifecycleError, "代理循环"):

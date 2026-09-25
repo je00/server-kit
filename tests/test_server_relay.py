@@ -75,8 +75,8 @@ class ServerRelayTests(unittest.TestCase):
         enable_vless(self.config)
         inputs = json.loads(self.inputs.read_text())
         for index, item in enumerate(inputs["exits"]):
-            item["proxy"]["server"] = "gateway.example.com"
-            item["proxy"]["port"] = 45001 + index
+            item["proxy"]["server"] = "proxy.example.test"
+            item["proxy"]["port"] = 8001 + index
         self.inputs.write_text(json.dumps(inputs))
         configure_dns(self.config, self.inputs, ids or ["111111111111", "222222222222"])
 
@@ -103,7 +103,7 @@ class ServerRelayTests(unittest.TestCase):
             self.assertEqual(raw["targetStrategy"], "AsIs")
             self.assertEqual(data["targetStrategy"], "ForceIPv4")
             self.assertEqual(raw["settings"], data["settings"])
-            self.assertEqual(raw["settings"]["servers"][0]["port"], 45001 + index)
+            self.assertEqual(raw["settings"]["servers"][0]["port"], 8001 + index)
             self.assertEqual(raw["streamSettings"]["sockopt"], {"domainStrategy": "AsIs"})
             self.assertNotIn("proxySettings", raw)
             self.assertEqual(worker["outbounds"][0]["protocol"], "blackhole")
@@ -130,7 +130,7 @@ class ServerRelayTests(unittest.TestCase):
         primary = next(o for o in config["outbounds"] if o.get("tag") == f"{OUTBOUND_TAG}-111111111111")
         backup = next(o for o in config["outbounds"] if o.get("tag") == f"{OUTBOUND_TAG}-222222222222")
         self.assertEqual(primary["settings"]["servers"][0]["address"], "127.0.0.1")
-        self.assertEqual(backup["settings"]["servers"][0]["address"], "gateway.example.com")
+        self.assertEqual(backup["settings"]["servers"][0]["address"], "proxy.example.test")
         worker = render_exit_dns_workers(self.config, self.inputs)["111111111111"]
         self.assertEqual(primary["settings"]["servers"][0]["port"], worker["inbounds"][0]["port"])
         self.assertEqual(primary["settings"]["servers"][0]["users"][0]["pass"], worker["inbounds"][0]["settings"]["accounts"][0]["pass"])
@@ -140,7 +140,7 @@ class ServerRelayTests(unittest.TestCase):
         self.assertEqual(render_exit_dns_workers(self.config, self.inputs), {})
         restored = render_xray(self.config, self.inputs, self.xray, peers, policy)
         primary = next(o for o in restored["outbounds"] if o.get("tag") == f"{OUTBOUND_TAG}-111111111111")
-        self.assertEqual(primary["settings"]["servers"][0]["address"], "gateway.example.com")
+        self.assertEqual(primary["settings"]["servers"][0]["address"], "proxy.example.test")
 
     def test_dns_mode_rejects_unknown_ids_and_local_upstream_without_changing_fact(self) -> None:
         self.enable_consistent_dns()

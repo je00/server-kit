@@ -1,34 +1,46 @@
 <aside class="sidebar">
-  <div class="brand"><span class="brand-mark small">SK</span><strong>server-kit</strong></div>
+  <a class="brand" href="{% url 'dashboard' %}" aria-label="server-kit 主机总览"><span class="brand-mark small">{% include "dashboard/_icon.html" with icon="terminal" %}</span><span><strong>server-kit<span class="brand-period">.</span></strong><small>内网 · 服务 · 访问控制</small></span></a>
   <nav aria-label="主导航">
-    <a class="nav-item{% if active_page == 'dashboard' %} active{% endif %}" href="{% url 'dashboard' %}">主机总览</a>
-    <a class="nav-item{% if active_page == 'deploy' %} active{% endif %}" href="{% url 'deployment-wizard' %}">部署向导</a>
-    <a class="nav-item{% if active_page == 'nodes' %} active{% endif %}" href="{% url 'network-nodes' %}">内网节点</a>
-    <a class="nav-item{% if active_page == 'subscriptions' %} active{% endif %}" href="{% url 'network-subscriptions' %}">域名管理</a>
-    <a class="nav-item{% if active_page == 'proxy' %} active{% endif %}" href="{% url 'network-proxy-resources' %}">代理资源</a>
-    <a class="nav-item{% if active_page == 'files' %} active{% endif %}" href="{% url 'file-resources' %}">文件资源</a>
-    <a class="nav-item{% if active_page == 'security' %} active{% endif %}" href="{% url 'security-transactions' %}">安全事务</a>
-    <a class="nav-item{% if active_page == 'backups' %} active{% endif %}" href="{% url 'backups' %}">配置备份</a>
-    <a class="nav-item{% if active_page == 'audit' %} active{% endif %}" href="{% url 'task-audit' %}">任务与审计</a>
-    {% if request.user.is_superuser %}<a class="nav-item{% if active_page == 'accounts' %} active{% endif %}" href="{% url 'accounts' %}">管理账号</a>{% endif %}
+    <span class="nav-section-label">工作空间</span>
+    {% include "dashboard/_nav_link.html" with page="dashboard" route="dashboard" label="主机总览" %}
+    {% include "dashboard/_nav_link.html" with page="nodes" route="network-nodes" label="内网节点" %}
+    {% include "dashboard/_nav_link.html" with page="deploy" route="deployment-wizard" label="部署向导" %}
+    <span class="nav-section-label">网络与资源</span>
+    {% include "dashboard/_nav_link.html" with page="subscriptions" route="network-subscriptions" label="域名管理" %}
+    {% include "dashboard/_nav_link.html" with page="proxy" route="network-proxy-resources" label="代理资源" %}
+    {% include "dashboard/_nav_link.html" with page="files" route="file-resources" label="文件资源" %}
+    <span class="nav-section-label">系统管理</span>
+    {% include "dashboard/_nav_link.html" with page="security" route="security-transactions" label="安全事务" %}
+    {% if request.user.is_superuser %}{% include "dashboard/_nav_link.html" with page="backups" route="backups" label="配置备份" %}{% endif %}
+    {% include "dashboard/_nav_link.html" with page="audit" route="task-audit" label="任务与审计" %}
+    {% if request.user.is_superuser %}{% include "dashboard/_nav_link.html" with page="accounts" route="accounts" label="管理账号" %}{% endif %}
   </nav>
   <div class="sidebar-footer">
     {% include "dashboard/_theme_picker.html" with theme_picker_class="sidebar-theme-picker" %}
-    <form method="post" action="{% url 'logout' %}">
-      {% csrf_token %}
-      <button class="text-button" type="submit">退出 {{ request.user.username }}</button>
-    </form>
+    <div class="account-chip"><span class="account-avatar" aria-hidden="true">{{ request.user.username|first|upper }}</span><span class="account-identity"><strong>{{ request.user.username }}</strong><small>{% if request.user.is_superuser %}超级管理员{% elif request.user.is_staff %}管理员{% else %}只读账号{% endif %}</small></span><form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="icon-button" type="submit" aria-label="退出登录" title="退出登录">{% include "dashboard/_icon.html" with icon="logout" %}</button></form></div>
   </div>
 </aside>
 
+<header class="mobile-header"><a class="brand" href="{% url 'dashboard' %}"><span class="brand-mark small">{% include "dashboard/_icon.html" with icon="terminal" %}</span><strong>server-kit<span class="brand-period">.</span></strong></a><span class="mobile-context">内网管理</span></header>
 <nav class="mobile-nav" aria-label="手机导航">
-  <a class="{% if active_page == 'dashboard' %}active{% endif %}" href="{% url 'dashboard' %}">总览</a>
-  <a class="{% if active_page == 'deploy' %}active{% endif %}" href="{% url 'deployment-wizard' %}">部署</a>
-  <a class="{% if active_page == 'nodes' %}active{% endif %}" href="{% url 'network-nodes' %}">节点</a>
-  <a class="{% if active_page == 'subscriptions' %}active{% endif %}" href="{% url 'network-subscriptions' %}">域名</a>
-  <a class="{% if active_page == 'proxy' %}active{% endif %}" href="{% url 'network-proxy-resources' %}">代理</a>
-  <a class="{% if active_page == 'files' %}active{% endif %}" href="{% url 'file-resources' %}">文件</a>
-  <a class="{% if active_page == 'security' %}active{% endif %}" href="{% url 'security-transactions' %}">安全</a><a class="{% if active_page == 'backups' %}active{% endif %}" href="{% url 'backups' %}">备份</a>
-  <a class="{% if active_page == 'audit' %}active{% endif %}" href="{% url 'task-audit' %}">审计</a>
-  {% include "dashboard/_theme_picker.html" with theme_picker_class="mobile-theme-picker" %}
+  {% include "dashboard/_nav_link.html" with page="dashboard" route="dashboard" label="总览" %}
+  {% include "dashboard/_nav_link.html" with page="nodes" route="network-nodes" label="内网节点" %}
+  {% include "dashboard/_nav_link.html" with page="proxy" route="network-proxy-resources" label="代理资源" %}
+  <details class="mobile-menu" data-mobile-menu>
+    <summary{% if active_page != 'dashboard' and active_page != 'nodes' and active_page != 'proxy' %} class="active"{% endif %}>{% include "dashboard/_icon.html" with icon="more" %}<span>更多</span></summary>
+    <div class="mobile-menu-panel">
+      <div class="mobile-menu-heading"><strong>工作空间</strong><button class="text-button" type="button" data-mobile-menu-close>收起菜单 ×</button></div>
+      <div class="mobile-menu-links">
+        {% include "dashboard/_nav_link.html" with page="deploy" route="deployment-wizard" label="部署向导" %}
+        {% include "dashboard/_nav_link.html" with page="subscriptions" route="network-subscriptions" label="域名管理" %}
+        {% include "dashboard/_nav_link.html" with page="files" route="file-resources" label="文件资源" %}
+        {% include "dashboard/_nav_link.html" with page="security" route="security-transactions" label="安全事务" %}
+        {% if request.user.is_superuser %}{% include "dashboard/_nav_link.html" with page="backups" route="backups" label="配置备份" %}{% endif %}
+        {% include "dashboard/_nav_link.html" with page="audit" route="task-audit" label="任务与审计" %}
+        {% if request.user.is_superuser %}{% include "dashboard/_nav_link.html" with page="accounts" route="accounts" label="管理账号" %}{% endif %}
+      </div>
+      {% include "dashboard/_theme_picker.html" with theme_picker_class="mobile-theme-picker" %}
+      <form class="mobile-logout" method="post" action="{% url 'logout' %}">{% csrf_token %}<span>{{ request.user.username }}</span><button class="text-button" type="submit">退出登录 →</button></form>
+    </div>
+  </details>
 </nav>

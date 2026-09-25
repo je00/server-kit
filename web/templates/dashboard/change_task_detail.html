@@ -5,15 +5,29 @@
 {% block body %}
 <div class="app-shell">
   {% include "dashboard/_navigation.html" %}
-  <main class="content detail-content"{% if not task.terminal %} data-task-refresh="true"{% endif %}>
-    <a class="back-link" href="{% url 'task-audit' %}">← 返回任务与审计</a>
-    <header class="page-header"><div><p class="eyebrow">{{ task.id }}</p><h1>{% if task.preview.title %}{{ task.preview.title }}{% else %}已清理的变更任务{% endif %}</h1><p class="muted">{% if task.details_purged %}任务详情已按七天保留策略清理，生命周期审计仍然保留。{% else %}{{ task.preview.summary }}{% endif %}</p></div><span class="stage-badge">{{ task.state_label }}</span></header>
-    {% if task.state == "waiting_confirmation" or task.state == "queued" %}<form method="post" action="{% url 'change-task-cancel' task.id %}" class="inline-form">{% csrf_token %}<button type="submit" class="button danger">取消任务</button></form>{% endif %}
+  <main id="main-content" tabindex="-1" class="content detail-content" data-task-live{% if not task.terminal %} data-task-refresh="true"{% endif %}>
+    <nav class="action-row" aria-label="任务导航">
+      {% if task_origin %}<a class="back-link" href="{{ task_origin.url }}">← 返回{{ task_origin.label }}</a><a class="secondary-button compact-button" href="{% url 'task-audit' %}">查看全部任务</a>
+      {% else %}<a class="back-link" href="{% url 'task-audit' %}">← 返回任务与审计</a>{% endif %}
+    </nav>
+    <header class="page-header"><div><p class="eyebrow">{{ task.id }}</p><h1>{% if task.preview.title %}{{ task.preview.title }}{% else %}已清理的变更任务{% endif %}</h1><p class="muted">{% if task.details_purged %}任务详情已按七天保留策略清理，生命周期审计仍然保留。{% else %}{{ task.preview.summary }}{% endif %}</p></div><span class="stage-badge task-state-{{ task.state }}">{{ task.state_label }}</span></header>
+    {% include "dashboard/_messages.html" %}
+    {% if task.state == 'waiting_rollback_confirmation' or not task.terminal and task.result.state == 'pending' %}
+    <div class="alert warning" role="alert">
+      <strong>尚未完成：请通过独立连接验证并确认</strong>
+      <p>当前变更仍处于自动回滚窗口{% if task.result.remaining_seconds %}，剩余 {{ task.result.remaining_seconds }} 秒{% endif %}。请保留本窗口，通过另一条独立登录连接验证后，再进入对应页面确认保留；原发起会话不能确认。未在期限内确认将恢复原配置。</p>
+      {% if task.action == 'network.public_endpoint.apply' or task.action == 'network.public_endpoint.confirm' or task.action == 'network.public_endpoint.rollback' %}<a class="secondary-button compact-button" href="{% url 'network-subscriptions' %}#public-endpoint">查看公网入口事务</a>
+      {% elif task.result.operation == 'restore_apply' or task.result.operation == 'restore_confirm' or task.result.operation == 'restore_rollback' %}<a class="secondary-button compact-button" href="{% url 'backups' %}">查看备份恢复事务</a>
+      {% elif task.result.transaction_type %}<a class="secondary-button compact-button" href="{% url 'security-transactions' %}">查看安全事务</a>{% endif %}
+    </div>
+    {% endif %}
+    {% if not task.terminal %}<div class="task-refresh-controls"><span class="privacy-note" role="status" data-task-refresh-status>任务状态自动更新，关闭页面不会取消任务。</span><button type="button" class="copy-button" data-task-refresh-toggle aria-pressed="false">暂停自动更新</button></div>{% endif %}
+    {% if task.state == "waiting_confirmation" or task.state == "queued" %}<form method="post" action="{% url 'change-task-cancel' task.id %}" class="inline-form">{% csrf_token %}<button type="submit" class="secondary-button danger-quiet">取消任务</button></form>{% endif %}
     <section class="inventory-panel">
       <div class="section-heading"><div><p class="eyebrow">当前进度</p><h2>{{ task.progress.message }}</h2></div></div>
-      {% if task.preview.stages %}<ol class="wizard-steps" aria-label="部署阶段">{% for stage in task.preview.stages %}<li><span>{{ forloop.counter }}</span><strong>{{ stage }}</strong></li>{% endfor %}</ol>{% endif %}
-      <dl class="fact-grid">{% for label, value in task.preview.facts.items %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
       {% if task.error %}<div class="alert danger task-error" role="alert"><strong>失败原因</strong><p>{{ task.error.message }}</p><small>诊断代码：{{ task.error.code }}。敏感订阅链接、出口凭据和底层命令输出不会写入任务详情。</small></div>{% endif %}
+      {% if task.preview.stages %}<ol class="task-stage-list" aria-label="任务执行顺序">{% for stage in task.preview.stages %}<li><span>{{ forloop.counter }}</span><strong>{{ stage }}</strong></li>{% endfor %}</ol>{% endif %}
+      <dl class="fact-grid">{% for label, value in task.preview.facts.items %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
       {% if task.result.service %}<div class="alert success">实际状态：{{ task.result.service.state }}</div>{% endif %}
       {% if task.result.resource_id %}<div class="alert success">文件资源 {{ task.result.resource_id }} 已完成 {{ task.result.operation }}。</div>{% endif %}
       {% if task.result.fingerprint %}<div class="alert success">SSH 客户端：{{ task.result.type }} · {{ task.result.fingerprint }} · {{ task.result.name }}</div>{% endif %}
@@ -26,13 +40,15 @@
       {% if task.result.download_name %}<div class="alert success">加密配置备份已创建：{{ task.result.backup_id }}。</div><a class="action-button" href="{% url 'backup-download' task.result.backup_id %}">下载密文备份</a>{% endif %}
       {% if task.result.deleted and task.result.backup_id %}<div class="alert success">配置备份 {{ task.result.backup_id }} 已永久删除。</div>{% endif %}
       {% if task.result.service_id and task.result.verification %}<div class="alert success">部署结果已通过主机快照与服务清单双重核验。</div>{% elif task.result.verification %}<div class="alert success">防火墙端口事实配置：{% if task.result.verification.facts %}已核验{% else %}不一致{% endif %}；nftables 实际规则：{% if task.result.verification.nftables %}已核验{% else %}不一致{% endif %}。</div>{% endif %}
-      {% if task.result.transaction_type %}<div class="alert success">安全事务 {{ task.result.transaction_type }} 已完成 {{ task.result.operation }}；当前状态：{% if task.result.state == 'pending' %}等待独立连接确认{% else %}空闲{% endif %}。</div>{% endif %}
-      {% if task.result.operation == 'restore_apply' or task.result.operation == 'restore_confirm' or task.result.operation == 'restore_rollback' %}<div class="alert success">配置恢复已完成 {{ task.result.operation }}；当前状态：{% if task.result.state == 'pending' %}等待独立连接确认或自动回滚{% else %}空闲{% endif %}。</div>{% endif %}
-      {% if task.action == 'network.public_endpoint.apply' or task.action == 'network.public_endpoint.confirm' or task.action == 'network.public_endpoint.rollback' %}<div class="alert success">稳定公网入口联动事务当前状态：{% if task.state == 'waiting_rollback_confirmation' %}等待独立连接确认，剩余 {{ task.result.remaining_seconds }} 秒；超时将恢复入口事实、HTTPS 证书和全部发布链接{% elif task.state == 'confirmed' %}已确认保留{% elif task.state == 'rolled_back' %}已回滚{% else %}{{ task.state_label }}{% endif %}。</div>{% endif %}
+      {% if task.state != 'waiting_rollback_confirmation' and task.result.state != 'pending' %}
+      {% if task.result.transaction_type %}<div class="alert success">安全事务 {{ task.result.transaction_type }} 已完成 {{ task.result.operation }}；当前状态：空闲。</div>{% endif %}
+      {% if task.result.operation == 'restore_apply' or task.result.operation == 'restore_confirm' or task.result.operation == 'restore_rollback' %}<div class="alert success">配置恢复已完成 {{ task.result.operation }}；当前状态：空闲。</div>{% endif %}
+      {% if task.action == 'network.public_endpoint.apply' or task.action == 'network.public_endpoint.confirm' or task.action == 'network.public_endpoint.rollback' %}<div class="alert {% if task.state == 'confirmed' %}success{% elif task.state == 'failed' %}danger{% else %}neutral{% endif %}">稳定公网入口联动事务当前状态：{% if task.state == 'confirmed' %}已确认保留{% elif task.state == 'rolled_back' %}已回滚{% else %}{{ task.state_label }}{% endif %}。</div>{% endif %}
+      {% endif %}
     </section>
     <section class="inventory-panel">
       <div class="section-heading"><div><p class="eyebrow">生命周期审计</p><h2>状态迁移</h2></div></div>
-      <div class="audit-list">{% for item in task.transitions %}<article><div><strong>{{ item.message }}</strong><p>{{ item.occurred_at }}</p></div><span>{{ item.to_state }}</span></article>{% empty %}<div class="empty-state">暂无状态迁移。</div>{% endfor %}</div>
+      <div class="audit-list">{% for item in task.transitions %}<article><div><strong>{{ item.message }}</strong><p><time datetime="{{ item.occurred_at }}" data-local-time title="{{ item.occurred_at }}">{{ item.occurred_at }}</time></p></div><span>{{ item.to_state }}</span></article>{% empty %}<div class="empty-state">暂无状态迁移。</div>{% endfor %}</div>
     </section>
   </main>
 </div>

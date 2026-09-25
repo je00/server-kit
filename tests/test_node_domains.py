@@ -47,13 +47,13 @@ class NodeDomainTests(unittest.TestCase):
             set_domains(self.config, self.active, self.disabled, "home-nas", ["localhost"])
         wildcard = set_domains(
             self.config, self.active, self.disabled, "home-nas",
-            ["*.INTERNAL.EXAMPLE."], ["vpn.example.net"],
+            ["*.INTERNAL.EXAMPLE."], ["gateway-demo.example.net"],
         )
         self.assertEqual(wildcard["domains"], ["*.internal.example"])
         with self.assertRaisesRegex(NodeDomainError, "覆盖 VPS 域名"):
             set_domains(
                 self.config, self.active, self.disabled, "home-nas",
-                ["*.example.com"], ["vpn.example.com"],
+                ["*.managed.example.com"], ["gateway-demo.managed.example.com"],
             )
         set_domains(self.config, self.active, self.disabled, "home-nas", ["nas.internal.example"])
         with self.assertRaisesRegex(NodeDomainError, "home-nas"):

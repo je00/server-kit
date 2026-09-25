@@ -3,13 +3,13 @@
 {% block body %}
 <div class="app-shell">
   {% include "dashboard/_navigation.html" %}
-  <main class="content detail-content">
+  <main id="main-content" tabindex="-1" class="content detail-content">
     <a class="back-link" href="{% url 'file-resources' %}">← 返回文件资源</a>
     <header class="page-header"><div><p class="eyebrow">root 影响预览</p><h1>{{ task.preview.title }}</h1><p class="muted">{{ task.preview.summary }}</p></div><span class="stage-badge">{{ task.state_label }}</span></header>
     <section class="inventory-panel">
       <dl class="fact-grid">{% for label, value in task.preview.facts.items %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>
       <div class="alert danger">仅删除源站资源；第三方 CDN 已缓存副本不会被主动清除，可能保留到原有效期结束。</div>
-      <form method="post" action="{% url 'file-resource-delete-execute' resource_id %}">{% csrf_token %}<input type="hidden" name="task_id" value="{{ task.id }}"><input type="hidden" name="confirmed" value="yes"><label>当前账号密码<input type="password" name="password" required autocomplete="current-password"></label><button class="action-button danger" type="submit">确认删除源站文件</button></form>
+      <form class="stack-form" method="post" action="{% url 'file-resource-delete-execute' resource_id %}">{% csrf_token %}<input type="hidden" name="task_id" value="{{ task.id }}"><input type="hidden" name="confirmed" value="yes"><label>当前账号密码<input type="password" name="password" required autocomplete="current-password"></label><div class="confirm-actions"><a class="secondary-button" href="{% url 'file-resources' %}">取消</a><button class="action-button danger-button" type="submit">确认删除源站文件</button></div></form>
     </section>
   </main>
 </div>

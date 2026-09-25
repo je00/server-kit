@@ -124,6 +124,28 @@ class AwgAccessTests(unittest.TestCase):
         with self.assertRaisesRegex(PolicyError, "自身"):
             change(self.common(operation="allow", client="desk", arguments=["desk", "22", "tcp"]))
 
+    def test_range_round_trip_duplicate_detection_and_exact_delete(self) -> None:
+        change(self.common(operation="allow", client="desk", arguments=["phone", "22,8000-8003,8002-8005", "tcp"]))
+        with self.assertRaises(PolicyError):
+            change(self.common(operation="allow", client="desk", arguments=["phone", "8000-8005,22", "tcp"]))
+        change(self.common(operation="allow", client="desk", arguments=["phone", "53", "udp"]))
+        change(self.common(operation="mode", client="desk", arguments=["restricted"]))
+        commit(self.common())
+        policy = json.loads(self.active.read_text())
+        tcp = next(item for item in policy["clients"]["desk"]["allow"] if item["network"] == "tcp")
+        self.assertEqual(tcp["ports"], [22, *range(8000, 8006)])
+        rendered = self.render(policy)
+        self.assertIn("tcp dport { 22, 8000-8005 }", rendered)
+        change(self.common(operation="deny", client="desk", arguments=["phone", "22,8000-8005", "tcp"]))
+        remaining = json.loads(self.pending.read_text())["clients"]["desk"]["allow"]
+        self.assertEqual([item["network"] for item in remaining], ["udp"])
+
+    def test_bad_range_does_not_write_pending_policy(self) -> None:
+        for ports in ("8005-8000", "65535-65536", "22-", ""):
+            with self.subTest(ports=ports), self.assertRaises(PolicyError):
+                change(self.common(operation="allow", client="desk", arguments=["phone", ports, "tcp"]))
+        self.assertFalse(self.pending.exists())
+
     def test_forget_makes_reused_name_default_to_unrestricted(self) -> None:
         self.active.write_text(json.dumps({"version": 1, "clients": {
             "desk": {"mode": "restricted", "allow": []},

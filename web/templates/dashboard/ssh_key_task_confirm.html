@@ -3,10 +3,10 @@
 {% block body %}
 <div class="app-shell">
   {% include "dashboard/_navigation.html" %}
-  <main class="content detail-content">
+  <main id="main-content" tabindex="-1" class="content detail-content">
     <a class="back-link" href="{% url 'service-detail' 'ssh' %}">← 返回 SSH 客户端</a>
     <header class="page-header"><div><p class="eyebrow">root 影响预览</p><h1>{{ task.preview.title }}</h1><p class="muted">{{ task.preview.summary }}</p></div><span class="stage-badge">{{ task.state_label }}</span></header>
-    <section class="inventory-panel"><dl class="fact-grid">{% for label, value in task.preview.facts.items %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl><form method="post" action="{% url 'ssh-key-execute' %}">{% csrf_token %}<input type="hidden" name="task_id" value="{{ task.id }}"><button class="action-button danger" type="submit">确认提交任务</button></form></section>
+    <section class="inventory-panel"><dl class="fact-grid">{% for label, value in task.preview.facts.items %}<div><dt>{{ label }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl><form class="confirm-actions" method="post" action="{% url 'ssh-key-execute' %}">{% csrf_token %}<input type="hidden" name="task_id" value="{{ task.id }}"><a class="secondary-button" href="{% url 'service-detail' 'ssh' %}">取消</a><button class="action-button{% if task.action == 'ssh.key.delete' %} danger-button{% endif %}" type="submit">确认提交任务</button></form></section>
   </main>
 </div>
 {% endblock %}

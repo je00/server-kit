@@ -3,7 +3,10 @@
 {% block title %}确认安全事务 · server-kit{% endblock %}
 
 {% block body %}
-<main class="content confirm-content">
+<div class="app-shell">
+{% include "dashboard/_navigation.html" %}
+<main id="main-content" tabindex="-1" class="content confirm-content">
+  <a class="back-link" href="{% url 'security-transactions' %}">← 返回安全事务</a>
   <section class="confirm-card">
     <span class="stage-badge">高风险事务</span>
     <p class="eyebrow">{{ transaction_type }}</p>
@@ -23,4 +26,5 @@
     </div>
   </section>
 </main>
+</div>
 {% endblock %}

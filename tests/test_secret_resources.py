@@ -23,7 +23,7 @@ class SecretResourceTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.config = Path(self.temporary.name) / "clash.json"
         self.config.write_text(json.dumps({
-            "mode": "clash", "server_address": "203.0.113.10", "port": 52541,
+            "mode": "clash", "server_address": "203.0.113.188", "port": 52541,
             "downloads": [{"peer_name": "home-iphone", "download_name": "手机 订阅.yaml", "token": "a" * 64}],
         }), encoding="utf-8")
 

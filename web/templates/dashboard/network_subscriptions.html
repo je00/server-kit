@@ -1,19 +1,25 @@
 {% extends "base.html" %}
+{% load static %}
+{% block extra_head %}<script src="{% static 'inline_tasks.js' %}" defer></script>{% endblock %}
 
 {% block title %}域名管理 · server-kit{% endblock %}
 
 {% block body %}
+{% include "dashboard/_inline_task_modal.html" %}
 <div class="app-shell">
   {% include "dashboard/_navigation.html" %}
-  <main class="content detail-content">
-    <header class="page-header"><div><p class="eyebrow">DOMAIN</p><h1>域名管理</h1><p class="muted">集中管理稳定公网入口、动态 DNS 和全局订阅强制解析。</p></div><div class="header-actions"><span class="stage-badge">{{ public_endpoint.fqdn|default:"兼容 IP 模式" }}</span></div></header>
+  <main id="main-content" tabindex="-1" class="content detail-content">
+    <header class="page-header"><div><p class="eyebrow">DOMAIN</p><h1>域名管理</h1><p class="muted">集中管理稳定公网入口、动态 DNS 和全局订阅强制解析。</p></div><div class="header-actions"><span class="stage-badge">{% if public_endpoint_error %}入口状态未知{% else %}{{ public_endpoint.fqdn|default:"兼容 IP 模式" }}{% endif %}</span></div></header>
     {% include "dashboard/_messages.html" %}
-    {% if snapshot_error %}<div class="alert danger">{{ snapshot_error }}</div>{% endif %}
+    {% if snapshot_error %}<div class="alert danger" role="alert">{{ snapshot_error }}</div>{% endif %}
+    <nav class="page-shortcuts" aria-label="本页设置"><a href="#public-endpoint">公网入口</a><a href="#dynamic-dns">动态 DNS</a><a href="#host-records">订阅域名映射</a></nav>
 
-    <section class="inventory-panel">
-      <div class="section-heading"><div><p class="eyebrow">公网恢复</p><h2>稳定公网入口</h2></div><span class="stage-badge">{% if public_endpoint_transaction.state == "pending" %}等待确认{% elif public_endpoint.configured %}已稳定{% else %}兼容 IP 模式{% endif %}</span></div>
+    <section id="public-endpoint" class="inventory-panel">
+      <div class="section-heading"><div><p class="eyebrow">公网恢复</p><h2>稳定公网入口</h2></div><span class="stage-badge">{% if public_endpoint_transaction.state == "pending" %}等待确认{% elif public_endpoint_error %}状态未知{% elif public_endpoint.configured %}已稳定{% else %}兼容 IP 模式{% endif %}</span></div>
+      {% if public_endpoint_error %}<div class="empty-state"><h3>公网入口状态未知</h3><p>无法加载当前状态，不代表现有配置已被清除。</p><a class="secondary-button" href="{% url 'network-subscriptions' %}">重新加载</a></div>{% else %}
       <dl class="fact-grid"><div><dt>FQDN</dt><dd>{{ public_endpoint.fqdn|default:"未配置" }}</dd></div><div><dt>本机路由 IPv4</dt><dd>{{ public_endpoint.current_ipv4|default:"暂不可用" }}</dd></div><div><dt>DNS IPv4 集合</dt><dd>{{ public_endpoint.dns_ipv4s|join:", "|default:"无结果" }}</dd></div><div><dt>包含路由 IP</dt><dd>{% if public_endpoint.matches_current_ipv4 is True %}是{% elif public_endpoint.matches_current_ipv4 is False %}否{% else %}无法判断{% endif %}</dd></div><div><dt>DNS TTL</dt><dd>{{ public_endpoint.dns_ttl_status }}</dd></div></dl>
       {% for diagnostic in public_endpoint.diagnostics %}<div class="alert neutral">{{ diagnostic }}</div>{% endfor %}<p class="privacy-note">{{ public_endpoint.recovery_hint }}</p><p class="privacy-note">应用稳定入口时会联动迁移 AWG/VLESS 节点地址、HTTPS 证书、Clash/普通文件发布地址和全部订阅内容；任何一步失败都会恢复旧入口与旧链接。</p>
+      {% endif %}
       {% if public_endpoint_transaction.state == "pending" %}<div class="alert neutral endpoint-pending-state"><div><strong>入口变更正在等待确认</strong><p>请先通过另一条独立连接验证新入口；超时后会自动恢复原配置。</p></div><div class="countdown" data-countdown="{{ public_endpoint_transaction.remaining_seconds }}"><strong data-countdown-value>{{ public_endpoint_transaction.remaining_seconds }}</strong><span>秒</span></div></div>{% endif %}
       {% if network.writes_enabled %}{% if request.user.is_superuser or request.user.is_staff %}
         {% if public_endpoint_transaction.state == "pending" %}
@@ -21,7 +27,7 @@
           <form method="post" action="{% url 'network-public-endpoint-preview' %}">{% csrf_token %}<input type="hidden" name="operation" value="confirm"><button class="secondary-button" type="submit">独立连接确认保留</button></form>
           <form method="post" action="{% url 'network-public-endpoint-preview' %}">{% csrf_token %}<input type="hidden" name="operation" value="rollback"><button class="copy-button danger-quiet" type="submit">立即恢复原入口</button></form>
         </div>
-        {% elif public_endpoint_transaction.state == "idle" %}
+        {% elif public_endpoint_transaction.state == "idle" and not public_endpoint_error %}
         <div class="public-endpoint-actions">
           <form class="public-endpoint-apply-form" method="post" action="{% url 'network-public-endpoint-preview' %}">{% csrf_token %}<input type="hidden" name="operation" value="apply"><input name="fqdn" value="{{ public_endpoint.fqdn }}" placeholder="vpn.example.com" aria-label="稳定公网入口 FQDN" required><button class="secondary-button" type="submit">{% if public_endpoint.configured %}预览变更入口{% else %}预览启用入口{% endif %}</button></form>
           {% if public_endpoint.configured %}<div class="public-endpoint-transaction-actions"><form method="post" action="{% url 'network-public-endpoint-preview' %}">{% csrf_token %}<input type="hidden" name="operation" value="clear"><button class="copy-button danger-quiet" type="submit">预览清除配置</button></form></div>{% endif %}
@@ -30,9 +36,10 @@
       {% endif %}{% endif %}
     </section>
 
-    <section class="inventory-panel duckdns-panel">
-      <div class="section-heading"><div><p class="eyebrow">动态公网入口</p><h2>动态 DNS 自动更新</h2></div><span class="stage-badge">{% if duckdns.enabled %}运行中{% elif duckdns.configured %}已停用{% else %}未配置{% endif %}</span></div>
-      <dl class="fact-grid"><div><dt>提供商</dt><dd>{{ duckdns.provider_label|default:"未配置" }}</dd></div><div><dt>更新域名</dt><dd>{{ duckdns.fqdn|default:public_endpoint.fqdn|default:"未配置" }}</dd></div><div><dt>凭据</dt><dd>{% if duckdns.credentials_present %}已安全保存{% else %}未配置{% endif %}</dd></div><div><dt>DNSPod 记录</dt><dd>{% if duckdns.zone %}{{ duckdns.record }}.{{ duckdns.zone }}{% else %}不适用{% endif %}</dd></div><div><dt>最近更新</dt><dd>{{ duckdns.last_update_at|default:"尚未运行" }}</dd></div><div><dt>最近公网 IPv4</dt><dd>{{ duckdns.last_ipv4|default:"尚无结果" }}</dd></div><div><dt>当前 DNS IPv4</dt><dd>{{ duckdns.dns_ipv4s|join:", "|default:"无结果" }}</dd></div><div><dt>定时器</dt><dd>{% if duckdns.timer_state == "enabled" %}每分钟{% elif duckdns.enabled %}状态异常{% else %}未启用{% endif %}</dd></div></dl>
+    <section id="dynamic-dns" class="inventory-panel duckdns-panel">
+      <div class="section-heading"><div><p class="eyebrow">动态公网入口</p><h2>动态 DNS 自动更新</h2></div><span class="stage-badge">{% if duckdns_error %}状态未知{% elif duckdns.enabled %}运行中{% elif duckdns.configured %}已停用{% else %}未配置{% endif %}</span></div>
+      {% if duckdns_error %}<div class="empty-state"><h3>动态 DNS状态未知</h3><p>无法加载当前状态，不代表现有配置已被清除。</p><a class="secondary-button" href="{% url 'network-subscriptions' %}">重新加载</a></div>{% else %}
+      <dl class="fact-grid"><div><dt>提供商</dt><dd>{{ duckdns.provider_label|default:"未配置" }}</dd></div><div><dt>更新域名</dt><dd>{{ duckdns.fqdn|default:public_endpoint.fqdn|default:"未配置" }}</dd></div><div><dt>凭据</dt><dd>{% if duckdns.credentials_present %}已安全保存{% else %}未配置{% endif %}</dd></div><div><dt>DNSPod 记录</dt><dd>{% if duckdns.zone %}{{ duckdns.record }}.{{ duckdns.zone }}{% else %}不适用{% endif %}</dd></div><div><dt>最近更新</dt><dd>{% if duckdns.last_update_at %}<time datetime="{{ duckdns.last_update_at }}" data-local-time title="{{ duckdns.last_update_at }}">{{ duckdns.last_update_at }}</time>{% else %}尚未运行{% endif %}</dd></div><div><dt>最近公网 IPv4</dt><dd>{{ duckdns.last_ipv4|default:"尚无结果" }}</dd></div><div><dt>当前 DNS IPv4</dt><dd>{{ duckdns.dns_ipv4s|join:", "|default:"无结果" }}</dd></div><div><dt>定时器</dt><dd>{% if duckdns.timer_state == "enabled" %}每分钟{% elif duckdns.enabled %}状态异常{% else %}未启用{% endif %}</dd></div></dl>
       {% for diagnostic in duckdns.diagnostics %}<div class="alert neutral">{{ diagnostic }}</div>{% endfor %}
       <p class="privacy-note">SecretId、SecretKey 或 Token 只写入 VPS 的 root-only 配置文件，网页、审计日志和任务数据库都不会回显或明文保存。更新直接读取本机默认路由公网 IPv4，不依赖该域名自身的解析，因此不会形成解析循环。</p>
       {% if network.writes_enabled and request.user.is_superuser or network.writes_enabled and request.user.is_staff %}
@@ -62,21 +69,24 @@
         </div>{% endif %}
       </div>
       {% endif %}
+      {% endif %}
     </section>
 
-    <section class="inventory-panel">
+    <section id="host-records" class="inventory-panel">
       <div class="section-heading"><div><p class="eyebrow">CLASH / STASH</p><h2>全局订阅强制解析</h2></div><span class="stage-badge">全部订阅</span></div>
-      <p class="muted">域名既可指向现有 AWG 节点，也可指向任意 IPv4 或 IPv6 地址。保存后同一份记录会写入所有已发布订阅的 <code>hosts</code>，VLESS 订阅同时写入 <code>proxy-hosts</code>。支持 <code>*.</code> 通配符，但覆盖 VPS 稳定入口或动态 DNS 域名时会拒绝。</p>
+      {% if network_snapshot_error %}<div class="empty-state"><h3>订阅域名映射状态未知</h3><p>无法加载当前状态，不代表现有配置已被清除。</p><a class="secondary-button" href="{% url 'network-subscriptions' %}">重新加载</a></div>{% else %}
+      <p class="muted">让订阅中的域名固定指向内网节点或指定 IP，支持 <code>*.</code> 通配符。记录会应用到全部已发布订阅；VPS 稳定入口和动态 DNS 域名不能被覆盖。</p>
       <div class="host-record-heading"><strong>解析到内网节点</strong><small>直接选择节点地址，无需重复填写 IP</small></div>
-      <div class="global-host-records">
-        {% for node in network.nodes %}{% if node.kind == 'awg' %}<article><div><strong>{{ node.name }}</strong><small>目标地址 {{ node.address }}{% if node.domains %} · 当前 {{ node.domains|join:'、' }}{% endif %}</small></div>{% if network.writes_enabled %}{% if request.user.is_superuser or request.user.is_staff %}<form method="post" action="{% url 'network-node-domains-preview' %}">{% csrf_token %}<input type="hidden" name="name" value="{{ node.name }}"><input name="domains" value="{{ node.domains|join:', ' }}" placeholder="git.example.com, *.internal.example" aria-label="解析到 {{ node.address }} 的域名"><button class="copy-button" type="submit">保存全局记录</button></form>{% endif %}{% endif %}</article>{% endif %}{% endfor %}
+      <div class="global-host-records" data-inline-ready="domains">
+        {% for node in network.nodes %}{% if node.kind == 'awg' %}<article data-inline-key="domains:{{ node.name }}"><div><strong>{{ node.name }}</strong><small>目标地址 {{ node.address }}{% if node.domains %} · 当前 {{ node.domains|join:'、' }}{% endif %}</small></div>{% if network.writes_enabled %}{% if request.user.is_superuser or request.user.is_staff %}<form method="post" action="{% url 'network-node-domains-preview' %}">{% csrf_token %}<input type="hidden" name="name" value="{{ node.name }}"><input name="domains" value="{{ node.domains|join:', ' }}" placeholder="git.example.com, *.internal.example" aria-label="解析到 {{ node.address }} 的域名"><button class="copy-button" type="submit">保存全局记录</button></form>{% endif %}{% endif %}</article>{% endif %}{% endfor %}
       </div>
       <div class="host-record-heading"><strong>解析到自定义 IP</strong><small>适用于 NAS、局域网服务或其他固定地址</small></div>
       <div class="global-host-records custom-host-records">
-        {% for record in network.host_records %}<article><div><strong>{{ record.address }}</strong><small>{{ record.domains|join:'、' }}</small></div>{% if network.writes_enabled %}{% if request.user.is_superuser or request.user.is_staff %}<div class="custom-host-record-actions"><form method="post" action="{% url 'network-address-domains-preview' %}">{% csrf_token %}<input type="hidden" name="address" value="{{ record.address }}"><input name="domains" value="{{ record.domains|join:', ' }}" aria-label="解析到 {{ record.address }} 的域名"><button class="copy-button" type="submit">保存</button></form><form class="compact-delete-form" method="post" action="{% url 'network-address-domains-preview' %}">{% csrf_token %}<input type="hidden" name="address" value="{{ record.address }}"><input type="hidden" name="domains" value=""><button class="copy-button danger-quiet" type="submit">删除</button></form></div>{% endif %}{% endif %}</article>{% empty %}<p class="privacy-note">尚未添加自定义 IP 记录。</p>{% endfor %}
+        {% for record in network.host_records %}<article data-inline-key="address:{{ record.address }}"><div><strong>{{ record.address }}</strong><small>{{ record.domains|join:'、' }}</small></div>{% if network.writes_enabled %}{% if request.user.is_superuser or request.user.is_staff %}<div class="custom-host-record-actions"><form method="post" action="{% url 'network-address-domains-preview' %}">{% csrf_token %}<input type="hidden" name="address" value="{{ record.address }}"><input name="domains" value="{{ record.domains|join:', ' }}" aria-label="解析到 {{ record.address }} 的域名"><button class="copy-button" type="submit">保存</button></form><form class="compact-delete-form" method="post" action="{% url 'network-address-domains-preview' %}">{% csrf_token %}<input type="hidden" name="address" value="{{ record.address }}"><input type="hidden" name="domains" value=""><button class="copy-button danger-quiet" type="submit">删除</button></form></div>{% endif %}{% endif %}</article>{% empty %}<p class="privacy-note">尚未添加自定义 IP 记录。</p>{% endfor %}
       </div>
       {% if network.writes_enabled %}{% if request.user.is_superuser or request.user.is_staff %}<form class="custom-host-create-form" method="post" action="{% url 'network-address-domains-preview' %}">{% csrf_token %}<label>目标 IP<input name="address" required placeholder="例如 192.168.0.103" autocomplete="off"></label><label>域名<input name="domains" required placeholder="例如 git.example.com, *.internal.example" autocomplete="off"></label><button class="secondary-button" type="submit">添加自定义解析</button></form>{% endif %}{% endif %}
       <p class="privacy-note">节点映射可留空保存来清除；自定义记录使用右侧“删除”。该功能只刷新订阅与 Xray DNS，不改动 AWG、SSH 或防火墙。</p>
+      {% endif %}
     </section>
 
   </main>

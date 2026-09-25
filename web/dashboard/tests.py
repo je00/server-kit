@@ -6,6 +6,7 @@ import re
 import io
 import json
 import base64
+import copy
 import tempfile
 import time
 import zipfile
@@ -194,7 +195,7 @@ CLASH_LINK_RESOURCE = {
     "resource": "clash_subscription_link",
     "item_id": "home-desk",
     "name": "home-desk",
-    "value": "https://203.0.113.10:52541/secret-token/home.yaml",
+    "value": "https://203.0.113.188:52541/secret-token/home.yaml",
 }
 CLASH_QR_RESOURCE = {"schema_version": 1, "resource": "clash_subscription_qr", "item_id": "home-desk", "name": "home-desk", "image_base64": "iVBORw0KGgo="}
 
@@ -511,7 +512,10 @@ class DashboardTests(TestCase):
         response = self.client.get(reverse("deployment-wizard"))
         self.assertContains(response, 'class="deployment-tabs"', count=1)
         self.assertContains(response, 'href="/guides/nodes/">节点接入指引</a>', count=1)
-        self.assertContains(response, 'href="/deploy/">部署向导</a>', count=1)
+        self.assertContains(response, 'class="nav-item active" href="/deploy/" aria-current="page"', count=2)
+        html = response.content.decode()
+        for container in ('<nav aria-label="主导航">', '<div class="mobile-menu-links">'):
+            self.assertRegex(html, re.escape(container) + r'[\s\S]*?<a class="nav-item active" href="/deploy/" aria-current="page">[\s\S]*?<span>部署向导</span>')
         self.assertNotContains(response, '>节点部署指引</a>')
         self.assertNotContains(response, '>指引</a>')
         css = (Path(__file__).resolve().parents[1] / "static" / "app.css").read_text(encoding="utf-8")
@@ -530,7 +534,9 @@ class DashboardTests(TestCase):
         self.assertContains(response, "把设备接入内网")
         self.assertContains(response, "节点接入指引")
         self.assertContains(response, reverse("deployment-wizard"))
-        self.assertContains(response, 'class="nav-item active" href="/deploy/">部署向导</a>')
+        self.assertContains(response, 'class="nav-item active" href="/deploy/" aria-current="page"', count=2)
+        self.assertContains(response, '<span>部署向导</span>', count=2)
+        self.assertContains(response, 'href="/guides/nodes/" aria-current="page">节点接入指引</a>', count=1)
         self.assertNotContains(response, 'href="/guides/nodes/">节点部署指引</a>')
         self.assertContains(response, "需要哪个客户端，就在对应的导入步骤安装")
         self.assertContains(response, "按顺序完成", count=1)
@@ -662,7 +668,7 @@ class DashboardTests(TestCase):
         self.client.force_login(self.viewer)
         expected = {
             "windows": ("Start-Service sshd", "HNetCfg.FWRule", "Stop-Service sshd", "Get-ServerKitListeners", "Get-AuthorizedKeyEntries"),
-            "linux": ("systemctl restart ssh", "ufw allow", "systemctl disable --now ssh", "ss -ltnp", "key_entries"),
+            "linux": ('"$SYSTEMCTL_BIN" restart ssh', "ufw allow", '"$SYSTEMCTL_BIN" disable --now ssh.socket', "ss -H -ltn", "key_entries", "reconcile_network", "OnUnitActiveSec=30s"),
             "macos": ("launchctl bootstrap", "socketfilterfw --add", "launchctl bootout", "launchctl print", "key_entries"),
             "android": ("sshd", "只监听 AWG 地址", "pkill -x sshd", "pgrep -x sshd", "key_entries"),
         }
@@ -792,8 +798,29 @@ class DashboardTests(TestCase):
         self.assertContains(response, "运行 1 天")
         self.assertNotContains(response, 'href="/#services">托管服务</a>')
 
+    @patch("dashboard.views.network_overview")
+    def test_permission_delete_form_uses_compact_range(self, overview) -> None:
+        data = copy.deepcopy(NETWORK_OVERVIEW)
+        phone = next(node for node in data["nodes"] if node["name"] == "iphone")
+        phone["permissions"][0].update({"ports": list(range(1, 65536)), "ports_label": "1-65535"})
+        overview.return_value = data
+        self.client.force_login(self.admin)
+        response = self.client.get(reverse("network-nodes"))
+        self.assertContains(response, 'name="ports" value="1-65535"')
+        self.assertNotContains(response, 'name="ports" value="1,2,3,4')
+
+    @patch("dashboard.views.duckdns_status", return_value={
+        "configured": False, "enabled": False, "fqdn": "", "provider_label": "未配置",
+        "credentials_present": False, "dns_ipv4s": [], "timer_state": "disabled",
+        "diagnostics": [],
+    })
+    @patch("dashboard.views.public_endpoint_status", return_value={
+        "configured": False, "fqdn": "", "current_ipv4": "203.0.113.10",
+        "dns_ipv4s": [], "matches_current_ipv4": None,
+        "dns_ttl_status": "未配置", "diagnostics": [], "recovery_hint": "尚未配置稳定入口。",
+    })
     @patch("dashboard.views.network_overview", return_value=NETWORK_OVERVIEW)
-    def test_network_pages_show_nodes_without_secrets(self, _overview) -> None:
+    def test_network_pages_show_nodes_without_secrets(self, _overview, _endpoint, _ddns) -> None:
         self.client.force_login(self.user)
         nodes = self.client.get(reverse("network-nodes"))
         self.assertContains(nodes, "home-desk")
@@ -809,10 +836,10 @@ class DashboardTests(TestCase):
         self.assertContains(nodes, "预览新增")
         self.assertContains(nodes, "管理入口")
         self.assertContains(nodes, "全部节点")
-        self.assertContains(nodes, "规则按条追加", count=2)
+        self.assertContains(nodes, "可一次添加多个目标或协议", count=2)
         self.assertNotContains(nodes, "访问模式")
         self.assertNotContains(nodes, "按允许列表限制")
-        self.assertContains(nodes, "现有节点保持一行")
+        self.assertContains(nodes, "展开节点即可管理访问权限、出口和订阅")
         self.assertNotContains(nodes, "全局订阅强制解析")
         self.assertNotContains(nodes, "稳定公网入口")
         self.assertNotContains(nodes, "动态 DNS 自动更新")
@@ -820,6 +847,8 @@ class DashboardTests(TestCase):
         self.assertContains(nodes, '<option value="all">全部协议与端口</option>', count=2)
         self.assertContains(nodes, 'class="permission-add-panel"', count=2)
         self.assertContains(nodes, "新增访问权限", count=2)
+        self.assertContains(nodes, 'placeholder="例如 22,443,8000-8010"', count=2)
+        self.assertContains(nodes, "范围含起止端口，可用英文逗号混合。", count=2)
         self.assertContains(nodes, 'name="network" value="tcp"')
         self.assertContains(nodes, 'name="ports" value="22"')
         self.assertContains(nodes, 'class="network-node-card node-config-panel"', count=2)
@@ -860,7 +889,7 @@ class DashboardTests(TestCase):
         self.assertEqual(len(summaries), 2)
         self.assertTrue(all("<form" not in summary for summary in summaries))
         self.assertTrue(all("配置" in summary for summary in summaries))
-        marker = '<details class="network-node-card node-config-panel">'
+        marker = '<details class="network-node-card node-config-panel"'
         starts = [match.start() for match in re.finditer(re.escape(marker), html)]
         node_cards = [
             html[start:starts[index + 1] if index + 1 < len(starts) else len(html)]
@@ -941,7 +970,7 @@ class DashboardTests(TestCase):
     })
     @patch("dashboard.views.public_endpoint_status", return_value={
         "configured": True, "fqdn": "root.example.com",
-        "current_ipv4": "203.0.113.20", "dns_ipv4s": ["203.0.113.20"],
+        "current_ipv4": "192.0.2.116", "dns_ipv4s": ["192.0.2.116"],
         "matches_current_ipv4": True, "dns_ttl_status": "正常",
         "diagnostics": [], "recovery_hint": "入口稳定。",
     })
@@ -964,7 +993,7 @@ class DashboardTests(TestCase):
     })
     @patch("dashboard.views.public_endpoint_status", return_value={
         "configured": True, "fqdn": "new.example.com",
-        "current_ipv4": "203.0.113.20", "dns_ipv4s": ["203.0.113.20"],
+        "current_ipv4": "192.0.2.116", "dns_ipv4s": ["192.0.2.116"],
         "matches_current_ipv4": True, "dns_ttl_status": "正常",
         "diagnostics": [], "recovery_hint": "等待确认。",
     })
@@ -1000,6 +1029,16 @@ class DashboardTests(TestCase):
         self.assertContains(response, 'data-secret-label="复制订阅链接"')
         self.assertNotContains(response, "订阅链接与二维码已锁定")
 
+    @patch("dashboard.views.duckdns_status", return_value={
+        "configured": False, "enabled": False, "fqdn": "", "provider_label": "未配置",
+        "credentials_present": False, "dns_ipv4s": [], "timer_state": "disabled",
+        "diagnostics": [],
+    })
+    @patch("dashboard.views.public_endpoint_status", return_value={
+        "configured": False, "fqdn": "", "current_ipv4": "203.0.113.10",
+        "dns_ipv4s": [], "matches_current_ipv4": None,
+        "dns_ttl_status": "未配置", "diagnostics": [], "recovery_hint": "尚未配置稳定入口。",
+    })
     @patch("dashboard.views.public_endpoint_transaction_status", return_value={
         "state": "idle", "remaining_seconds": 0, "rollback_seconds": 300,
         "independent_session": False, "last_outcome": "",
@@ -1011,7 +1050,7 @@ class DashboardTests(TestCase):
     })
     @patch("dashboard.views.network_overview", return_value=NETWORK_OVERVIEW)
     def test_node_page_embeds_key_generation_without_extension_handoff(
-        self, _overview, _context, _transaction,
+        self, _overview, _context, _transaction, _endpoint, _ddns,
     ) -> None:
         self.client.force_login(self.user)
         response = self.client.get(reverse("network-nodes"))
@@ -1178,14 +1217,14 @@ class DashboardTests(TestCase):
         self.client.force_login(self.user)
         response = self.client.post(reverse("network-duckdns-preview"), {
             "operation": "configure", "provider": "dnspod",
-            "fqdn": "vpn.example.com", "zone": "example.com",
+            "fqdn": "gateway-demo.example.com", "zone": "example.com",
             "secret_id": secret_id, "secret_key": secret_key,
         })
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, secret_id)
         self.assertNotContains(response, secret_key)
         preview_task.assert_called_once_with(
-            "configure", "dnspod", "vpn.example.com", "", secret_id,
+            "configure", "dnspod", "gateway-demo.example.com", "", secret_id,
             secret_key, "example.com", "owner"
         )
 
@@ -1230,7 +1269,7 @@ class DashboardTests(TestCase):
             page = self.client.get(reverse("network-nodes"))
             self.assertContains(page, "设为管理入口")
             html = page.content.decode("utf-8")
-            card = html[html.rindex('<details class="network-node-card node-config-panel">'):]
+            card = html[html.rindex('<details class="network-node-card node-config-panel"'):]
             actions = card.split('<div class="node-actions-inline">', 1)[1].split("</div>", 1)[0]
             self.assertIn("设为管理入口", actions)
             self.assertIn("禁用节点", actions)
@@ -1761,7 +1800,7 @@ class DashboardTests(TestCase):
         response = self.client.get(reverse("service-detail", args=["clash"]))
         self.assertNotContains(response, "secret-token")
         self.assertContains(response, "显示二维码")
-        self.assertNotContains(response, "https://203.0.113.10:52541")
+        self.assertNotContains(response, "https://203.0.113.188:52541")
 
     @patch("dashboard.views.public_endpoint_status", return_value={
         "current_ipv4": "203.0.113.10", "diagnostics": [],
@@ -2048,11 +2087,12 @@ class DashboardTests(TestCase):
         self.assertContains(response, "出口节点目录")
         self.assertContains(response, "按字段输入")
         self.assertContains(response, "YAML 格式参考")
-        self.assertContains(response, "server: proxy.example.com", count=2)
+        self.assertContains(response, "server: proxy.example.com", count=1)
         self.assertNotContains(response, 'placeholder="type: socks5', html=False)
         self.assertContains(response, '<details class="proxy-create-panel">', html=False)
         self.assertNotContains(response, '<details class="proxy-create-panel" open>', html=False)
-        self.assertNotContains(response, "查看链接")
+        self.assertContains(response, "查看链接")
+        self.assertContains(response, "data-sensitive-auth-modal")
         self.assertNotContains(response, "token=")
 
         self.unlock_sensitive_resources()
@@ -2192,6 +2232,29 @@ class DashboardTests(TestCase):
         preview_task.assert_called_once_with(
             "deny", "iphone", "home-desk", "22,443", "tcp", "admin"
         )
+
+    @patch("dashboard.views.preview_network_permission_task", return_value=NETWORK_PERMISSION_TASK_PREVIEW)
+    def test_permission_form_supports_ranges_and_exact_range_deletion(self, preview_task) -> None:
+        self.client.force_login(self.admin)
+        for operation in ("allow", "deny"):
+            preview_task.reset_mock()
+            response = self.client.post(reverse("network-permission-preview"), {
+                "operation": operation, "client": "iphone", "target": "home-desk",
+                "port_mode": "udp", "network": "udp", "ports": "22,8005,8000-8004,8002-8003",
+            })
+            self.assertEqual(response.status_code, 200)
+            preview_task.assert_called_once_with(operation, "iphone", "home-desk", "22,8000-8005", "udp", "admin")
+
+    @patch("dashboard.views.preview_network_permission_task")
+    def test_invalid_port_ranges_never_create_tasks(self, preview_task) -> None:
+        self.client.force_login(self.admin)
+        for ports in ("23-22", "0-22", "65535-65536", "22-", "22,,443"):
+            response = self.client.post(reverse("network-permission-preview"), {
+                "operation": "allow", "client": "iphone", "target": "home-desk",
+                "port_mode": "tcp", "ports": ports,
+            })
+            self.assertEqual(response.status_code, 400)
+        preview_task.assert_not_called()
 
     @patch("dashboard.views.preview_network_permission_task", return_value=NETWORK_PERMISSION_TASK_PREVIEW)
     def test_admin_can_allow_vless_to_all_nodes(self, preview_task) -> None:
@@ -2350,7 +2413,8 @@ class DashboardTests(TestCase):
         self.assertContains(response, "运行中")
         self.assertContains(response, "可下载")
         self.assertNotContains(response, "https://10.20.0.1")
-        self.assertNotContains(response, "复制链接")
+        self.assertContains(response, "复制链接")
+        self.assertContains(response, "data-sensitive-auth-modal")
         self.unlock_sensitive_resources()
         response = self.client.get(reverse("file-resources"))
         self.assertContains(response, "复制链接")

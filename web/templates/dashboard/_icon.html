@@ -1,0 +1,15 @@
+<svg class="ui-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+{% if icon == 'dashboard' %}<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>
+{% elif icon == 'nodes' %}<rect x="8" y="2" width="8" height="6" rx="1.5"/><rect x="2" y="16" width="7" height="6" rx="1.5"/><rect x="15" y="16" width="7" height="6" rx="1.5"/><path d="M12 8v4M5.5 16v-4h13v4"/>
+{% elif icon == 'deploy' %}<path d="M8 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-4M13 3h8v8M21 3 10 14M7 10v7h7"/>
+{% elif icon == 'subscriptions' %}<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/>
+{% elif icon == 'proxy' %}<path d="M3 7h16m-4-4 4 4-4 4M21 17H5m4-4-4 4 4 4"/>
+{% elif icon == 'files' %}<path d="M3 7V5a2 2 0 0 1 2-2h5l3 4h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/>
+{% elif icon == 'security' %}<path d="m12 2 8 3v6c0 5-4 8-8 11-4-3-8-6-8-11V5l8-3Z"/><path d="m8 12 3 3 5-6"/>
+{% elif icon == 'backups' %}<path d="M4 9a8 8 0 1 1 0 7M4 3v6h6M12 7v5l3 2"/>
+{% elif icon == 'audit' %}<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h8M8 12h8M8 17h5"/>
+{% elif icon == 'accounts' %}<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/>
+{% elif icon == 'more' %}<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>
+{% elif icon == 'logout' %}<path d="M9 4H4v16h5M10 12h11m-4-4 4 4-4 4"/>
+{% else %}<path d="m5 7 5 5-5 5M13 17h6"/>{% endif %}
+</svg>

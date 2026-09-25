@@ -247,6 +247,15 @@ def preview_network_permission_task(
     )
 
 
+def preview_network_permission_batch_task(
+    client_name: str, rules: list[dict[str, str]], actor: str,
+) -> dict[str, Any]:
+    return AgentClient(settings.SERVER_KIT_AGENT_SOCKET).request(
+        "task.preview",
+        {"action": "network.permission.batch", "arguments": {"client": client_name, "rules": rules}, "actor": actor},
+    )
+
+
 def preview_subscription_sync_task(actor: str) -> dict[str, Any]:
     return AgentClient(settings.SERVER_KIT_AGENT_SOCKET).request(
         "task.preview",

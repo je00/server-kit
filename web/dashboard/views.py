@@ -15,10 +15,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from django.contrib import messages
-from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model, update_session_auth_hash
 from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.core.exceptions import RequestDataTooBig, ValidationError
+from django.db import IntegrityError, transaction
 from django.contrib.auth.decorators import login_required
 from django.conf import settings
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, HttpResponseForbidden, JsonResponse
@@ -28,10 +28,12 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_POST
 
 from .models import DismissedNetworkNotice
+from .task_navigation import task_navigation_context
 from django.views.decorators.http import require_http_methods
 
 from control_plane.client import AgentError
 from lib.server_kit_bootstrap import BootstrapError, decode_enrollment_token
+from lib.server_kit_port_ranges import PortRangeError, normalize_ports
 
 from .snapshot import read_snapshot
 from .ssh_scripts import SshScriptBundle
@@ -64,6 +66,7 @@ from .services import (
     preview_address_domains_task,
     preview_network_node_import_task,
     preview_network_permission_task,
+    preview_network_permission_batch_task,
     preview_subscription_sync_task,
     preview_subscription_rotate_task,
     preview_subscription_state_task,
@@ -415,6 +418,7 @@ def _network_context(request, active_page):
         error = "暂时无法读取节点与订阅状态，请检查管理代理。"
     else:
         error = ""
+    network_snapshot_error = bool(error)
     targets = overview.get("targets", []) if isinstance(overview, dict) else []
     for node in overview.get("nodes", []) if isinstance(overview, dict) else []:
         if isinstance(node, dict):
@@ -455,9 +459,11 @@ def _network_context(request, active_page):
         except (AgentError, OSError, AttributeError):
             if not error:
                 error = "节点状态可用，但暂时无法读取本地密钥生成参数。"
+    public_endpoint_error = False
     try:
         endpoint_status = public_endpoint_status()
     except (AgentError, OSError):
+        public_endpoint_error = True
         endpoint_status = {"configured": False, "fqdn": "", "current_ipv4": "", "dns_ipv4s": [], "matches_current_ipv4": None, "dns_ttl_status": "暂不可用", "diagnostics": ["稳定公网入口诊断暂不可用。"], "recovery_hint": "只读诊断失败不会影响节点管理。"}
     endpoint_transaction = {
         "state": "idle", "remaining_seconds": 0, "rollback_seconds": 300,
@@ -474,9 +480,11 @@ def _network_context(request, active_page):
                 "rollback_seconds": 300, "independent_session": False,
                 "last_outcome": "",
             }
+    duckdns_error = False
     try:
         duckdns = duckdns_status()
     except (AgentError, OSError):
+        duckdns_error = True
         duckdns = {
             "configured": False, "enabled": False, "provider": "", "provider_label": "未配置",
             "fqdn": "", "zone": "", "record": "", "credentials_present": False,
@@ -489,13 +497,16 @@ def _network_context(request, active_page):
     return {
         "network": overview,
         "snapshot_error": error,
+        "network_snapshot_error": network_snapshot_error,
         "active_page": active_page,
         "sensitive_unlocked": _sensitive_unlocked(request),
         "generator_context_json": generator_context_json,
         "generator_suggested_address": generator_suggested_address,
         "public_endpoint": endpoint_status,
+        "public_endpoint_error": public_endpoint_error,
         "public_endpoint_transaction": endpoint_transaction,
         "duckdns": duckdns,
+        "duckdns_error": duckdns_error,
     }
 
 
@@ -538,18 +549,23 @@ def network_subscriptions(request):
 def task_audit(request):
     """展示经过 root 哈希链校验的最近管理动作。"""
     errors = []
+    audit_error = False
+    tasks_error = False
     try:
         result = audit_log()
     except AgentError:
         result = {"chain_valid": False, "items": []}
+        audit_error = True
         errors.append("暂时无法读取或验证管理审计链。")
     try:
         tasks = change_tasks()
     except AgentError:
         tasks = {"items": []}
+        tasks_error = True
         errors.append("暂时无法读取异步任务。")
     response = render(request, "dashboard/task_audit.html", {
         "audit": result, "tasks": tasks, "snapshot_error": " ".join(errors),
+        "audit_error": audit_error, "tasks_error": tasks_error,
         "active_page": "audit",
     })
     response["Cache-Control"] = "no-store, max-age=0"
@@ -898,6 +914,7 @@ def file_resource_list(request):
         "active_page": "files",
         "sensitive_unlocked": _sensitive_unlocked(request),
         "max_upload_label": _format_bytes(settings.SERVER_KIT_MAX_UPLOAD_BYTES),
+        "max_upload_bytes": settings.SERVER_KIT_MAX_UPLOAD_BYTES,
     })
     response["Cache-Control"] = "no-store, max-age=0"
     return response
@@ -1017,15 +1034,29 @@ def file_resource_secret(request, resource_id, resource):
 @never_cache
 def accounts(request):
     """维护超级管理员、管理员和只读账号。"""
+    wants_json = "application/json" in request.headers.get("Accept", "")
     if not request.user.is_superuser:
+        if wants_json:
+            return JsonResponse({"ok": False, "error": "只有超级管理员可以维护账号。"}, status=403)
         return HttpResponseForbidden("只有超级管理员可以维护账号。")
     User = get_user_model()
+    form_state = {}
+    error = ""
+    response_status = 200
     if request.method == "POST":
         operation = request.POST.get("operation", "")
-        if request.POST.get("confirmed") != "yes" or not request.user.check_password(request.POST.get("current_password", "")):
-            messages.error(request, "当前账号密码或确认项无效，未修改账号。")
-            return redirect("accounts")
+        # Preserve only public form values for the HTML fallback. Passwords are
+        # never returned, stored in a session, or included in audit metadata.
+        form_state = {
+            "operation": operation,
+            "username": request.POST.get("username", "")[:150],
+            "role": request.POST.get("role", "admin"),
+            "user_id": request.POST.get("user_id", "")[:20],
+        }
+        target = None
         try:
+            if request.POST.get("confirmed") != "yes" or not request.user.check_password(request.POST.get("current_password", "")):
+                raise ValidationError("当前账号密码或确认项无效，未修改账号。")
             with transaction.atomic():
                 if operation == "create":
                     username = request.POST.get("username", "").strip()
@@ -1043,7 +1074,8 @@ def accounts(request):
                     provisional.set_password(password)
                     provisional.save()
                     record_audit_event("account_create", request.user.get_username())
-                    messages.success(request, f"账号 {username} 已创建。")
+                    target = provisional
+                    message = f"账号 {username} 已创建。"
                 elif operation in {"enable", "disable"}:
                     target = User.objects.select_for_update().get(pk=int(request.POST.get("user_id", "0")))
                     if target.pk == request.user.pk and operation == "disable":
@@ -1053,7 +1085,7 @@ def accounts(request):
                     target.is_active = operation == "enable"
                     target.save(update_fields=["is_active"])
                     record_audit_event(f"account_{operation}", request.user.get_username())
-                    messages.success(request, f"账号 {target.username} 已{operation == 'enable' and '启用' or '停用'}。")
+                    message = f"账号 {target.username} 已{operation == 'enable' and '启用' or '停用'}。"
                 elif operation == "reset_password":
                     target = User.objects.select_for_update().get(pk=int(request.POST.get("user_id", "0")))
                     password = request.POST.get("new_password", "")
@@ -1061,18 +1093,41 @@ def accounts(request):
                     target.set_password(password)
                     target.save(update_fields=["password"])
                     record_audit_event("account_password_reset", request.user.get_username())
-                    messages.success(request, f"账号 {target.username} 的密码已重置。")
+                    message = f"账号 {target.username} 的密码已重置。"
                 else:
-                    return HttpResponseBadRequest("账号动作无效。")
-        except AgentError:
-            messages.error(request, "审计代理不可用，账号修改已回滚。")
-        except (User.DoesNotExist, ValueError, ValidationError) as exc:
-            message = exc.messages[0] if isinstance(exc, ValidationError) else "目标账号不存在。"
-            messages.error(request, message)
-        return redirect("accounts")
+                    raise ValidationError("账号动作无效。")
+        except (AgentError, OSError):
+            error = "审计代理不可用，账号修改已回滚。"
+            response_status = 503
+        except IntegrityError:
+            error = "账号名称已存在，请换一个名称。"
+            response_status = 400
+        except (User.DoesNotExist, ValueError, OverflowError, ValidationError) as exc:
+            error = exc.messages[0] if isinstance(exc, ValidationError) else "目标账号不存在。"
+            response_status = 400
+        if error:
+            if wants_json:
+                return JsonResponse({"ok": False, "error": error}, status=response_status)
+        else:
+            if operation == "reset_password" and target.pk == request.user.pk:
+                # Keep this authenticated session after its own password change;
+                # Django rotates its session key and invalidates other sessions.
+                update_session_auth_hash(request, target)
+            if wants_json:
+                return JsonResponse({
+                    "ok": True, "message": message, "operation": operation,
+                    "account": {
+                        "id": target.pk, "username": target.username,
+                        "role": "superuser" if target.is_superuser else "admin" if target.is_staff else "viewer",
+                        "is_active": target.is_active, "is_current": target.pk == request.user.pk,
+                    },
+                })
+            messages.success(request, message)
+            return redirect("accounts")
     response = render(request, "dashboard/accounts.html", {
         "accounts": User.objects.order_by("username"), "active_page": "accounts",
-    })
+        "account_form": form_state, "account_error": error,
+    }, status=response_status)
     response["Cache-Control"] = "no-store, max-age=0"
     return response
 
@@ -1383,10 +1438,10 @@ def network_permission_preview(request):
     elif operation == "deny" and network not in {"", "all", "tcp", "udp"}:
         return HttpResponseBadRequest("待删除权限的协议无效。")
     if network in {"tcp", "udp"}:
-        raw_ports = [value.strip() for value in request.POST.get("ports", "").split(",")]
-        if not raw_ports or any(not value.isdigit() or not 1 <= int(value) <= 65535 for value in raw_ports):
-            return HttpResponseBadRequest("端口列表无效，请用英文逗号分隔。")
-        ports = ",".join(str(value) for value in sorted({int(value) for value in raw_ports}))
+        try:
+            ports = normalize_ports(request.POST.get("ports", ""))
+        except PortRangeError as error:
+            return HttpResponseBadRequest(str(error))
     try:
         task = preview_network_permission_task(
             operation, client_name, target, ports, network,
@@ -1416,6 +1471,177 @@ def network_permission_execute(request):
         return redirect("network-nodes")
     messages.success(request, "访问授权变更已进入队列；执行失败时保留原有策略。")
     return redirect("change-task-detail", task_id=task_id)
+
+
+def _permission_batch_gate(request, method):
+    """Same-page APIs never redirect to a login page or accept viewer writes."""
+    if not request.user.is_authenticated:
+        return JsonResponse({"error": "登录已失效，请重新登录后继续。"}, status=401)
+    if not _can_manage(request.user):
+        return JsonResponse({"error": "只有管理员可以变更访问权限。"}, status=403)
+    if request.method != method:
+        response = JsonResponse({"error": "请求方法无效。"}, status=405)
+        response["Allow"] = method
+        return response
+    return None
+
+
+def _permission_batch_body(request, fields):
+    if request.content_type != "application/json":
+        raise ValueError("请使用 JSON 提交权限规则。")
+    try:
+        body = request.body
+        if len(body) > 1_048_576:
+            raise ValueError("权限请求过大，请减少端口表达式长度。")
+        data = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError, RequestDataTooBig) as error:
+        raise ValueError("权限请求格式无效。") from error
+    if not isinstance(data, dict) or set(data) != fields:
+        raise ValueError("权限请求字段无效。")
+    return data
+
+
+def _permission_batch_error(error):
+    code = getattr(error, "code", "agent_error")
+    if code in {"invalid_params", "operation_forbidden"}:
+        return JsonResponse({"error": str(error) or "权限规则无效。"}, status=400)
+    if code in {"not_found", "forbidden"}:
+        return JsonResponse({"error": "权限任务不存在或不可访问。"}, status=404)
+    if code in {"queue_full", "facts_changed", "conflict"}:
+        return JsonResponse({"error": str(error) or "状态已变化，请重新预览。"}, status=409)
+    return JsonResponse({"error": "暂时无法连接管理代理，请稍后重试；不要重复创建任务。"}, status=503)
+
+
+def _permission_batch_own_task(task, task_id, actor):
+    # Task ownership and action come from root's immutable task record, never
+    # from a posted client name or browser session metadata.
+    return (
+        isinstance(task, dict) and task.get("id") == task_id
+        and task.get("action") == "network.permission.batch"
+        and task.get("actor") == actor
+    )
+
+
+def _permission_batch_payload(task):
+    return {
+        "task": task,
+        "status_url": reverse("network-permission-batch-status", args=[task["id"]]),
+        "task_url": reverse("change-task-detail", args=[task["id"]]),
+    }
+
+
+@never_cache
+def network_permission_batch_preview(request):
+    rejected = _permission_batch_gate(request, "POST")
+    if rejected is not None:
+        return rejected
+    try:
+        data = _permission_batch_body(request, {"client", "rules"})
+        client = data["client"]
+        if not isinstance(client, str) or not NODE_PATTERN.fullmatch(client.strip()):
+            raise ValueError("节点名称无效。")
+        client = client.strip()
+        rules = data["rules"]
+        if not isinstance(rules, list) or not 1 <= len(rules) <= 20:
+            raise ValueError("每次请添加 1–20 条权限规则。")
+        normalized = []
+        seen = set()
+        for index, rule in enumerate(rules, 1):
+            if not isinstance(rule, dict) or set(rule) != {"target", "network", "ports"}:
+                raise ValueError(f"第 {index} 条权限规则字段无效。")
+            if any(not isinstance(value, str) for value in rule.values()):
+                raise ValueError(f"第 {index} 条权限规则格式无效。")
+            target, network, ports = (rule[key].strip() for key in ("target", "network", "ports"))
+            network = network.lower()
+            if not NODE_PATTERN.fullmatch(target):
+                raise ValueError(f"第 {index} 条权限目标无效。")
+            if network not in {"tcp", "udp", "all"}:
+                raise ValueError(f"第 {index} 条权限协议无效。")
+            if network == "all":
+                if ports:
+                    raise ValueError(f"第 {index} 条全部协议规则不能指定端口。")
+            else:
+                try:
+                    ports = normalize_ports(ports)
+                except PortRangeError as error:
+                    raise ValueError(f"第 {index} 条：{error}") from error
+            key = (target, network, ports)
+            if key in seen:
+                raise ValueError(f"第 {index} 条与前面的规则重复。")
+            seen.add(key)
+            normalized.append({"target": target, "network": network, "ports": ports})
+    except ValueError as error:
+        return JsonResponse({"error": str(error)}, status=400)
+    try:
+        task = preview_network_permission_batch_task(client, normalized, request.user.get_username())
+    except (AgentError, OSError) as error:
+        return _permission_batch_error(error)
+    return JsonResponse(_permission_batch_payload(task))
+
+
+@never_cache
+def network_permission_batch_execute(request):
+    rejected = _permission_batch_gate(request, "POST")
+    if rejected is not None:
+        return rejected
+    try:
+        data = _permission_batch_body(request, {"task_id"})
+        task_id = data["task_id"]
+        if not isinstance(task_id, str) or not TASK_ID_PATTERN.fullmatch(task_id):
+            raise ValueError("权限任务确认无效。")
+    except ValueError as error:
+        return JsonResponse({"error": str(error)}, status=400)
+    actor = request.user.get_username()
+    try:
+        task = change_task(task_id)
+        if not _permission_batch_own_task(task, task_id, actor):
+            return JsonResponse({"error": "权限任务不存在或不可访问。"}, status=404)
+        # A retry observes the same queued/running/completed task. Only the
+        # original confirmation can queue it; the root API is idempotent too.
+        if task.get("state") == "waiting_confirmation":
+            task = confirm_change_task(task_id, actor)
+    except (AgentError, OSError) as error:
+        return _permission_batch_error(error)
+    return JsonResponse(_permission_batch_payload(task))
+
+
+@never_cache
+def network_permission_batch_status(request, task_id):
+    rejected = _permission_batch_gate(request, "GET")
+    if rejected is not None:
+        return rejected
+    if not TASK_ID_PATTERN.fullmatch(task_id):
+        return JsonResponse({"error": "权限任务标识无效。"}, status=400)
+    try:
+        task = change_task(task_id)
+    except (AgentError, OSError) as error:
+        return _permission_batch_error(error)
+    if not _permission_batch_own_task(task, task_id, request.user.get_username()):
+        return JsonResponse({"error": "权限任务不存在或不可访问。"}, status=404)
+    payload = _permission_batch_payload(task)
+    if task.get("state") == "succeeded":
+        preview = task.get("preview", {})
+        facts = preview.get("facts", {}) if isinstance(preview, dict) else {}
+        client = facts.get("来源节点") if isinstance(facts, dict) else None
+        if not isinstance(client, str) or not NODE_PATTERN.fullmatch(client):
+            payload["permissions_error"] = "任务明细已不可用，请重新加载节点页核验当前权限。"
+        else:
+            payload["client"] = client
+            try:
+                overview = network_overview()
+                nodes = overview.get("nodes")
+                node = next((
+                    item for item in nodes
+                    if isinstance(item, dict) and item.get("name") == client
+                ), None) if isinstance(nodes, list) else None
+                permissions = node.get("permissions") if node is not None else None
+                if not isinstance(permissions, list) or any(not isinstance(item, dict) for item in permissions):
+                    payload["permissions_error"] = "暂时无法核验该节点的权限，请重试读取。"
+                else:
+                    payload["permissions"] = permissions
+            except (AgentError, OSError):
+                payload["permissions_error"] = "任务已成功，但最新权限暂时读取失败；请重试读取，不要重复提交。"
+    return JsonResponse(payload)
 
 
 @login_required
@@ -1667,17 +1893,23 @@ def backups(request):
             else:
                 messages.success(request, "配置恢复确认任务已进入后台队列。")
                 return redirect("change-task-detail", task_id=task["id"])
+    errors = []
+    backups_error = False
+    restore_status_error = False
     try:
         listing = manage_backup("list", request.user.get_username())
+    except AgentError:
+        listing = {"items": []}
+        backups_error = True
+        errors.append("暂时无法读取备份列表，请稍后重试。")
+    try:
         restore_transaction = manage_backup(
             "restore_status", request.user.get_username()
         )
     except AgentError:
-        listing = {"items": []}
-        restore_transaction = {"state": "idle", "writes_enabled": False}
-        error = "暂时无法读取配置备份，请检查管理代理。"
-    else:
-        error = ""
+        restore_transaction = {"state": "unknown", "writes_enabled": False}
+        restore_status_error = True
+        errors.append("配置恢复事务状态暂不可用，请勿重复提交恢复操作。")
     response = render(
         request,
         "dashboard/backups.html",
@@ -1685,7 +1917,9 @@ def backups(request):
             "backups": listing.get("items", []),
             "restore_task": restore_task,
             "restore_transaction": restore_transaction,
-            "snapshot_error": error,
+            "snapshot_error": " ".join(errors),
+            "backups_error": backups_error,
+            "restore_status_error": restore_status_error,
             "active_page": "backups",
         },
     )
@@ -2154,11 +2388,18 @@ def change_task_detail(request, task_id):
         task = change_task(task_id)
     except AgentError as error:
         _raise_404_if_missing(error)
-        return HttpResponse("暂时无法读取任务详情。", status=503)
+        return render(
+            request,
+            "dashboard/task_unavailable.html",
+            {"active_page": "audit", "task_id": task_id,
+             **task_navigation_context(None, request.session, task_id)},
+            status=503,
+        )
     response = render(
         request,
         "dashboard/change_task_detail.html",
-        {"task": task, "active_page": "audit"},
+        {"task": task, "active_page": "audit",
+         **task_navigation_context(task, request.session, task_id)},
     )
     response["Cache-Control"] = "no-store, max-age=0"
     return response

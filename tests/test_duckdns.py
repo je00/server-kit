@@ -30,7 +30,7 @@ class DuckDnsHelperTests(unittest.TestCase):
     def run_helper(
         self, operation: str, *, provider: str = "duckdns", token: str = "",
         secret_id: str = "", secret_key: str = "", zone: str = "",
-        fqdn: str = "vpn.duckdns.org", response: str = "OK",
+        fqdn: str = "gateway-demo.duckdns.org", response: str = "OK",
         dnspod_responses: dict[str, object] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         arguments = [
@@ -41,13 +41,12 @@ class DuckDnsHelperTests(unittest.TestCase):
             arguments += [
                 "--fqdn", fqdn, "--node-domains-config", str(self.node_domains),
             ]
-        # Public resolver IP used only as a synthetic globally routable fixture.
-        # SERVER_KIT_TESTING mocks provider updates and DNS responses; no live
-        # deployment address or credential is used here.
         environment = {
             **os.environ,
             "PYTHONPATH": str(REPO),
             "SERVER_KIT_TESTING": "1",
+            # This mocked fixture must pass the production is_global check.
+            # API/DNS results below are injected; no request goes to this IP.
             "SERVER_KIT_PUBLIC_IPV4": "1.1.1.1",
             "SERVER_KIT_DUCKDNS_API_RESPONSE": response,
             "SERVER_KIT_DNS_IPV4S": "1.1.1.1",
@@ -119,7 +118,7 @@ class DuckDnsHelperTests(unittest.TestCase):
         result = self.run_helper(
             "configure", provider="duckdns",
             token="12345678-1234-1234-1234-123456789abc",
-            fqdn="vpn.duckdns.org",
+            fqdn="gateway-demo.duckdns.org",
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("覆盖 VPS 域名", result.stderr)
@@ -130,13 +129,13 @@ class DuckDnsHelperTests(unittest.TestCase):
         secret_key = "example-secret-key-value-1234567890"
         responses = {
             "DescribeRecordList": {"Response": {"RecordList": [{
-                "RecordId": 42, "Name": "vpn", "Type": "A", "Line": "默认",
+                "RecordId": 42, "Name": "gateway-demo", "Type": "A", "Line": "默认",
             }], "RequestId": "describe"}},
             "ModifyDynamicDNS": {"Response": {"RecordId": 42, "RequestId": "modify"}},
         }
         configured = self.run_helper(
             "configure", provider="dnspod", secret_id=secret_id, secret_key=secret_key,
-            zone="example.com", fqdn="vpn.example.com", dnspod_responses=responses,
+            zone="managed.example.com", fqdn="gateway-demo.managed.example.com", dnspod_responses=responses,
         )
         self.assertEqual(configured.returncode, 0, configured.stderr)
         self.assertNotIn(secret_id, configured.stdout)
@@ -164,8 +163,8 @@ class DuckDnsHelperTests(unittest.TestCase):
         }
         rejected = self.run_helper(
             "configure", provider="dnspod", secret_id="AKIDEXAMPLE1234567890123456789012",
-            secret_key="candidate-secret-key-value-123456", zone="example.com",
-            fqdn="vpn.example.com", dnspod_responses=responses,
+            secret_key="candidate-secret-key-value-123456", zone="managed.example.com",
+            fqdn="gateway-demo.managed.example.com", dnspod_responses=responses,
         )
         self.assertNotEqual(rejected.returncode, 0)
         self.assertNotIn("candidate-secret", rejected.stderr)
@@ -181,28 +180,28 @@ class DuckDnsHelperTests(unittest.TestCase):
             "configure", provider="dnspod",
             secret_id="AKIDEXAMPLE1234567890123456789012",
             secret_key="example-secret-key-value-1234567890",
-            zone="example.com", fqdn="vpn.example.com",
+            zone="managed.example.com", fqdn="gateway-demo.managed.example.com",
             dnspod_responses=responses,
         )
         self.assertEqual(configured.returncode, 0, configured.stderr)
         self.assertTrue(json.loads(configured.stdout)["record_created"])
         saved = json.loads(self.config.read_text())
-        self.assertEqual(saved["record"], "vpn")
+        self.assertEqual(saved["record"], "gateway-demo")
         self.assertEqual(saved["record_id"], 43)
         self.assertEqual(saved["record_line"], "默认")
 
     def test_dnspod_configure_rejects_ambiguous_same_name_records(self) -> None:
         responses = {
             "DescribeRecordList": {"Response": {"RecordList": [
-                {"RecordId": 42, "Name": "vpn", "Type": "A", "Line": "默认"},
-                {"RecordId": 43, "Name": "vpn", "Type": "A", "Line": "境外"},
+                {"RecordId": 42, "Name": "gateway-demo", "Type": "A", "Line": "默认"},
+                {"RecordId": 43, "Name": "gateway-demo", "Type": "A", "Line": "境外"},
             ], "RequestId": "describe"}},
         }
         configured = self.run_helper(
             "configure", provider="dnspod",
             secret_id="AKIDEXAMPLE1234567890123456789012",
             secret_key="example-secret-key-value-1234567890",
-            zone="example.com", fqdn="vpn.example.com",
+            zone="managed.example.com", fqdn="gateway-demo.managed.example.com",
             dnspod_responses=responses,
         )
         self.assertNotEqual(configured.returncode, 0)
@@ -212,7 +211,7 @@ class DuckDnsHelperTests(unittest.TestCase):
     def test_reads_legacy_v1_duckdns_config(self) -> None:
         self.config.parent.mkdir(parents=True)
         self.config.write_text(json.dumps({
-            "schema_version": 1, "enabled": True, "fqdn": "vpn.duckdns.org",
+            "schema_version": 1, "enabled": True, "fqdn": "gateway-demo.duckdns.org",
             "token": "12345678-1234-1234-1234-123456789abc",
         }))
         status = self.run_helper("status")

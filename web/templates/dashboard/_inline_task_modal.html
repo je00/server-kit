@@ -1,0 +1,20 @@
+<div class="qr-modal" data-inline-task-modal data-execute-url="{% url 'inline-task-execute' %}" hidden>
+  <button class="qr-backdrop" type="button" data-inline-close aria-label="返回当前页面"></button>
+  <section class="qr-dialog inline-task-dialog" role="dialog" aria-modal="true" aria-labelledby="inline-task-title">
+    <button class="qr-close" type="button" data-inline-close aria-label="关闭">×</button>
+    <p class="eyebrow" data-inline-stage>核验变更</p><h2 id="inline-task-title" tabindex="-1">正在生成预览</h2>
+    <p class="muted" data-inline-summary></p>
+    <dl class="permission-review-facts" data-inline-facts></dl>
+    <p class="inline-task-status" data-inline-status role="status" aria-live="polite"></p>
+    <p class="form-error" data-inline-error role="alert" hidden></p>
+    <div class="modal-actions">
+      <button class="secondary-button" type="button" data-inline-edit hidden>返回编辑</button>
+      <button class="action-button" type="button" data-inline-confirm hidden>确认执行</button>
+      <button class="secondary-button" type="button" data-inline-retry hidden>重新获取状态</button>
+      <button class="secondary-button" type="button" data-inline-refresh hidden>重新读取列表</button>
+      <button class="secondary-button" type="button" data-inline-done hidden>继续操作</button>
+      <a class="copy-button" data-inline-task-link target="_blank" rel="noopener" hidden>在新页查看任务</a>
+    </div>
+    <p class="privacy-note">返回编辑不会执行变更。已提交的任务会在后台继续，关闭弹窗不会中断服务。</p>
+  </section>
+</div>

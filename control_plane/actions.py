@@ -212,6 +212,7 @@ CONFIRMED_ACTOR_FIELDS = frozenset({"actor", "confirmed"})
 PERMISSION_FIELDS = frozenset({
     "operation", "client", "target", "ports", "network", "actor", "confirmed",
 })
+PERMISSION_BATCH_FIELDS = frozenset({"client", "rules", "actor", "confirmed"})
 SUBSCRIPTION_ITEM_FIELDS = frozenset({"name", "actor", "confirmed"})
 SUBSCRIPTION_STATE_FIELDS = frozenset({"name", "state", "actor", "confirmed"})
 FIREWALL_PORT_FIELDS = frozenset({
@@ -486,6 +487,11 @@ _register(_variants(
     "network.permission.change 参数不正确。",
     invalid_variant_message="权限动作未登记。",
 ))
+_single(_change(
+    "network.permission.batch", "network.permission.batch", PERMISSION_BATCH_FIELDS,
+    ChangeLevel.CONFIRMATION, preview="network_permission_batch", fact_scope="network",
+    executor="add_network_permissions", verifier="network_overview",
+), "network.permission.batch 参数不正确。")
 _single(_change(
     "network.subscription.rotate", "network.subscription.rotate", SUBSCRIPTION_ITEM_FIELDS,
     ChangeLevel.CONFIRMATION, preview="subscription", fact_scope="network",

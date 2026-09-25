@@ -16,6 +16,11 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from .server_kit_port_ranges import format_ports
+except ImportError:
+    from server_kit_port_ranges import format_ports
+
+try:
     from .server_kit_node_domains import (
         NodeDomainError, load_address_state, load_state as load_node_domain_state,
     )
@@ -171,7 +176,7 @@ def clean_permissions(value: object) -> list[dict[str, object]]:
             "target_label": "全部节点" if target == "all" else ("VPS 本机" if target == "vps" else target),
             "ip": address,
             "ports": clean_ports,
-            "ports_label": "全部端口" if network == "all" else ", ".join(str(port) for port in clean_ports),
+            "ports_label": "全部端口" if network == "all" else format_ports(clean_ports, separator=", "),
             "network": network,
             "network_label": "全部协议" if network == "all" else network.upper(),
         })

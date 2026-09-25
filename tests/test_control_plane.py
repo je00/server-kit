@@ -133,7 +133,7 @@ class FakeRunner:
             "enabled": self.duckdns_enabled,
             "provider": "duckdns" if self.duckdns_configured else "",
             "provider_label": "DuckDNS" if self.duckdns_configured else "未配置",
-            "fqdn": "vpn.duckdns.org" if self.duckdns_configured else "",
+            "fqdn": "gateway-demo.duckdns.org" if self.duckdns_configured else "",
             "zone": "", "record": "", "credentials_present": self.duckdns_configured,
             "token_present": self.duckdns_configured, "last_result": "",
             "last_update_at": "", "last_ipv4": "", "dns_ipv4s": [],
@@ -615,12 +615,12 @@ class ControlPlaneTests(unittest.TestCase):
         self.assertEqual(prepared.timeout_seconds, 240)
 
     def test_public_endpoint_cannot_enter_existing_subscription_wildcard(self) -> None:
-        self.runner.node_domains["home-desk"] = ["*.example.com"]
+        self.runner.node_domains["home-desk"] = ["*.managed.example.com"]
         with self.assertRaisesRegex(TaskEngineError, "覆盖 VPS 域名"):
             self.plane.prepare_task_action(
                 "network.public_endpoint.change",
                 {
-                    "operation": "apply", "fqdn": "vpn.example.com",
+                    "operation": "apply", "fqdn": "gateway-demo.managed.example.com",
                     "session_id": "a" * 64,
                 },
                 "owner",
@@ -660,31 +660,31 @@ class ControlPlaneTests(unittest.TestCase):
             "network.duckdns.change",
             {
                 "operation": "configure", "provider": "dnspod", "token": "",
-                "fqdn": "vpn.example.com",
-                "secret_id": secret_id, "secret_key": secret_key, "zone": "example.com",
+                "fqdn": "gateway-demo.managed.example.com",
+                "secret_id": secret_id, "secret_key": secret_key, "zone": "managed.example.com",
             }, "owner",
         )
         self.assertEqual(prepared.params["secret_id"], "")
         self.assertEqual(prepared.params["secret_key"], "")
         self.assertEqual(prepared.sensitive_params, {
-            "provider": "dnspod", "fqdn": "vpn.example.com", "token": "", "secret_id": secret_id,
-            "secret_key": secret_key, "zone": "example.com",
+            "provider": "dnspod", "fqdn": "gateway-demo.managed.example.com", "token": "", "secret_id": secret_id,
+            "secret_key": secret_key, "zone": "managed.example.com",
         })
         rendered = json.dumps(prepared.preview, ensure_ascii=False)
         self.assertNotIn(secret_id, rendered)
         self.assertNotIn(secret_key, rendered)
 
     def test_dnspod_domain_cannot_enter_existing_subscription_wildcard(self) -> None:
-        self.runner.node_domains["home-desk"] = ["*.example.com"]
+        self.runner.node_domains["home-desk"] = ["*.managed.example.com"]
         with self.assertRaisesRegex(TaskEngineError, "覆盖 VPS 域名"):
             self.plane.prepare_task_action(
                 "network.duckdns.change",
                 {
                     "operation": "configure", "provider": "dnspod",
-                    "fqdn": "vpn.example.com", "token": "",
+                    "fqdn": "gateway-demo.managed.example.com", "token": "",
                     "secret_id": "AKIDEXAMPLE1234567890123456789012",
                     "secret_key": "example-secret-key-value-1234567890",
-                    "zone": "example.com",
+                    "zone": "managed.example.com",
                 }, "owner",
             )
 
@@ -1015,11 +1015,11 @@ class ControlPlaneTests(unittest.TestCase):
             )
 
     def test_node_domain_wildcard_cannot_cover_vps_hostname(self) -> None:
-        self.runner.public_endpoint_fqdn = "vpn.example.com"
+        self.runner.public_endpoint_fqdn = "gateway-demo.managed.example.com"
         with self.assertRaisesRegex(TaskEngineError, "覆盖 VPS 域名"):
             self.plane.prepare_task_action(
                 "network.node.domains",
-                {"name": "home-desk", "domains": ["*.example.com"]},
+                {"name": "home-desk", "domains": ["*.managed.example.com"]},
                 "owner",
             )
 
@@ -1156,6 +1156,33 @@ class ControlPlaneTests(unittest.TestCase):
             self.runner.permission_changes[-1],
             ("deny", "home-desk", "all", "", "all", "owner"),
         )
+
+    def test_permission_ranges_are_canonical_and_duplicates_are_rejected(self) -> None:
+        params = {"operation": "allow", "client": "home-desk", "target": "vps",
+                  "ports": "8002-8004, 22,8000-8002", "network": "tcp"}
+        prepared = self.plane.prepare_task_action("network.permission.change", params, "owner")
+        self.assertEqual(prepared.params["ports"], "22,8000-8004")
+        self.assertEqual(prepared.preview["facts"]["端口"], "22,8000-8004")
+        self.plane.execute_task_action("network.permission.change", dict(prepared.params))
+        self.assertEqual(self.runner.permission_changes[-1][3], "22,8000-8004")
+        self.runner.home_permissions.append({
+            "target": "vps", "ip": "10.20.0.1", "ports": [22, *range(8000, 8005)],
+            "target_label": "VPS 本机", "network": "tcp", "network_label": "TCP", "ports_label": "22, 8000-8004",
+        })
+        with self.assertRaisesRegex(TaskEngineError, "已经存在"):
+            self.plane.prepare_task_action("network.permission.change", params, "owner")
+        deletion = self.plane.prepare_task_action("network.permission.change", {**params, "operation": "deny"}, "owner")
+        self.assertEqual(deletion.params["ports"], "22,8000-8004")
+        for ports in ("8005-8000", "0-22", "65535-65536", "22,,443"):
+            with self.subTest(ports=ports), self.assertRaises(TaskEngineError):
+                self.plane.prepare_task_action("network.permission.change", {**params, "ports": ports}, "owner")
+
+    def test_full_port_range_does_not_expand_task_arguments(self) -> None:
+        prepared = self.plane.prepare_task_action("network.permission.change", {
+            "operation": "allow", "client": "home-desk", "target": "vps", "ports": "1-65535", "network": "tcp",
+        }, "owner")
+        self.assertEqual(prepared.params["ports"], "1-65535")
+        self.assertEqual(prepared.params["network"], "tcp")
 
     def test_root_prepares_subscription_publication_tasks_without_secrets(self) -> None:
         synced = self.plane.prepare_task_action(

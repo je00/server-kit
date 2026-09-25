@@ -8,10 +8,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lib.server_kit_network import NetworkPaths, build_overview
+from lib.server_kit_network import NetworkPaths, build_overview, clean_permissions
 
 
 class NetworkOverviewTests(unittest.TestCase):
+    def test_port_ranges_are_displayed_compactly_without_changing_stored_ports(self) -> None:
+        ports = [22, *range(8000, 8011)]
+        permission = clean_permissions([{"target": "vps", "ip": "10.20.0.1", "network": "tcp", "ports": ports}])[0]
+        self.assertEqual(permission["ports"], ports)
+        self.assertEqual(permission["ports_label"], "22, 8000-8010")
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

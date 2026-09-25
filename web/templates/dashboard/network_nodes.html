@@ -5,18 +5,22 @@
 {% block extra_head %}
 <script src="{% static 'awg.js' %}" defer></script>
 <script src="{% static 'qrcode.js' %}" defer></script>
+<script src="{% static 'permissions.js' %}" defer></script>
+<script src="{% static 'inline_tasks.js' %}" defer></script>
 {% endblock %}
 
 {% block body %}
+{% include "dashboard/_inline_task_modal.html" %}
 <div class="app-shell">
   {% include "dashboard/_navigation.html" %}
-  <main class="content detail-content">
+  <main id="main-content" tabindex="-1" class="content detail-content">
     <header class="page-header">
-      <div><p class="eyebrow">网络身份</p><h1>内网节点</h1><p class="muted">新增功能按需展开；现有节点保持一行，点击右侧“配置”再管理详细设置。</p></div>
-      <div class="header-actions"><a class="secondary-button compact-button" href="{% url 'service-detail' 'amneziawg' %}#managed-ports">维护 AWG 备用入口</a><span class="stage-badge">{{ network.nodes|length }} 个节点</span></div>
+      <div><p class="eyebrow">设备与访问控制</p><h1>内网节点</h1><p class="muted">一台设备一个节点。展开节点即可管理访问权限、出口和订阅。</p></div>
+      <div class="header-actions"><a class="secondary-button compact-button" href="{% url 'node-deployment-guide' %}">接入指引</a><a class="secondary-button compact-button" href="{% url 'service-detail' 'amneziawg' %}#managed-ports" aria-label="维护 AWG 备用入口">备用入口</a><span class="stage-badge">{% if network_snapshot_error %}节点数量未知{% else %}{{ network.nodes|length }} 个节点{% endif %}</span></div>
     </header>
     {% include "dashboard/_messages.html" %}
-    {% if snapshot_error %}<div class="alert danger">{{ snapshot_error }}</div>{% endif %}
+    {% if snapshot_error and not network_snapshot_error %}<div class="alert neutral" role="status">{{ snapshot_error }}</div>{% endif %}
+    {% if network_snapshot_error %}<div class="alert danger" role="alert">{{ snapshot_error }}</div><section class="empty-state"><h2>无法加载当前状态</h2><p>暂不显示资源数量和变更操作；已有服务不受此页面读取失败影响。</p><a class="secondary-button" href="{% url 'network-nodes' %}">重新加载</a></section>{% else %}
     {% if network.pending_vless %}<div class="alert danger">检测到命令行留下的 VLESS 待应用策略。处理完成前，网页不会修改 VLESS 节点。</div>{% endif %}
     {% if network.pending_access %}<div class="alert danger">检测到命令行留下的 AWG 访问待应用策略。处理完成前，网页不会修改普通节点权限。</div>{% endif %}
     {% if not network.subscriptions_configured %}<div class="alert neutral">尚未安装 Clash 订阅服务；节点仍可管理，但不会生成订阅链接。</div>{% endif %}
@@ -60,11 +64,11 @@
     </details>
     {% elif request.user.is_superuser or request.user.is_staff %}<div class="alert neutral">节点写操作当前未启用；请检查管理代理的网络写入开关。</div>{% endif %}
 
-    <section class="inventory-panel node-inventory">
-      <div class="section-heading"><div><p class="eyebrow">当前生效</p><h2>现有节点</h2></div></div>
+    <section class="inventory-panel node-inventory" data-list-filter data-inline-ready="nodes">
+      <div class="section-heading"><div><p class="eyebrow">设备清单</p><h2>现有节点</h2></div><label class="list-filter"><span class="sr-only">搜索节点名称、地址或类型</span><input type="search" data-filter-input placeholder="搜索节点、地址或类型" autocomplete="off"></label></div>
       <div class="inventory-list network-list">
         {% for node in network.nodes %}
-        <details class="network-node-card node-config-panel">
+        <details class="network-node-card node-config-panel" data-filter-item data-filter-label="{{ node.name }} {{ node.detail }} {{ node.kind_label }} {{ node.state }}">
           <summary class="node-card-summary">
             <span class="node-main"><span class="node-heading"><strong>{{ node.name }}</strong><span class="node-kind">{{ node.kind_label }}</span>{% if node.protected %}<span class="protected-badge">管理入口</span>{% endif %}</span><small>{{ node.detail }} · {{ node.publication_state }}</small></span>
             <span class="node-row-tools"><span class="item-state">{{ node.state }}</span><span class="copy-button node-config-trigger">配置</span></span>
@@ -111,7 +115,7 @@
             </section>
 
             {% if node.kind == 'awg' or node.kind == 'vless' %}
-            <details class="node-config-card node-exit-card">
+            <details class="node-config-card node-exit-card" data-inline-key="exits:{{ node.name }}">
               <summary class="node-config-card-summary"><span class="node-config-card-title"><strong>可选中转出口</strong><small>{% if node.exit_names %}已增加：{{ node.exit_names|join:"、" }}{% else %}VPS MID（默认）{% endif %}</small></span><span class="node-config-card-meta"><span>{% if node.exit_ids %}{{ node.exit_ids|length }} 个额外出口{% else %}无需配置{% endif %}</span><span class="node-config-card-chevron" aria-hidden="true">⌄</span></span></summary>
               <div class="node-config-card-body node-exit-settings">
                 <div class="exit-default-path"><strong>默认使用 VPS MID</strong><span>不选择代理出口也能正常订阅和使用；流量直接从 VPS 出口。</span></div>
@@ -121,9 +125,9 @@
                   {% csrf_token %}<input type="hidden" name="name" value="{{ node.name }}">
                   <fieldset class="country-picker node-exit-picker">
                     <legend>额外代理出口（可不选）</legend>
-                    <div>{% for exit in network.exit_options %}<label><input type="checkbox" name="exit_ids" value="{{ exit.id }}"{% if exit.id in node.exit_ids %} checked{% endif %}><span>{{ exit.name }}{% if exit.default %} · 默认{% endif %}</span></label>{% endfor %}</div>
+                    <div>{% for exit in network.exit_options %}<label><input type="checkbox" name="exit_ids" value="{{ exit.id }}"{% if exit.id in node.exit_ids %} checked{% endif %}><span>{{ exit.name }}{% if exit.default %} · 默认{% endif %}</span></label>{% empty %}<p class="privacy-note">尚未添加代理出口，可先使用 VPS MID，或前往<a href="{% url 'network-proxy-resources' %}">代理资源</a>添加。</p>{% endfor %}</div>
                   </fieldset>
-                  <button class="copy-button" type="submit">保存中转设置</button>
+                  <button class="copy-button" type="submit">预览中转设置</button>
                 </form>
                 {% endif %}{% endif %}
                 <p class="privacy-note">清空所有勾选并保存即可恢复 VPS MID；删除代理资源时会自动清理节点引用。</p>
@@ -132,22 +136,69 @@
             {% endif %}
 
             <details class="node-config-card node-permission-card">
-              <summary class="node-config-card-summary"><span class="node-config-card-title"><strong>访问权限</strong><small>按目标、协议和端口逐条管理</small></span><span class="node-config-card-meta"><span>{{ node.permissions|length }} 条规则</span><span class="node-config-card-chevron" aria-hidden="true">⌄</span></span></summary>
+              <summary class="node-config-card-summary"><span class="node-config-card-title"><strong>访问权限</strong><small>按目标和端口管理，支持批量添加</small></span><span class="node-config-card-meta"><span data-permission-count>{{ node.permissions|length }} 条规则</span><span class="node-config-card-chevron" aria-hidden="true">⌄</span></span></summary>
               <div class="node-config-card-body node-permission-settings">
-                <p class="config-card-intro">规则按条追加；删除时只移除选中的目标、协议和端口。</p>
+                <p class="config-card-intro">可一次添加多个目标或协议，统一确认；已有规则保持不变。</p>
                 {% if node.protected and node.access_mode == 'unrestricted' %}<div class="permission-safety-note"><strong>管理入口保护</strong><span>删除“全部节点 / 全部端口”前，请先新增 VPS TCP 22、{{ network.management_port }}，防止失去 SSH 与网页管理连接。</span></div>{% endif %}
-                <div class="permission-list">
-                {% for permission in node.permissions %}<div class="permission-row{% if forloop.first %} first-permission-row{% endif %}"><span class="permission-target"><strong>{{ permission.target_label }}</strong>{% if permission.ip %}<small>{{ permission.ip }}</small>{% endif %}</span><span class="permission-scope"><strong>{{ permission.network_label }}</strong><small>{{ permission.ports_label }}</small></span>{% if network.writes_enabled %}{% if request.user.is_superuser or request.user.is_staff %}<form method="post" action="{% url 'network-permission-preview' %}">{% csrf_token %}<input type="hidden" name="operation" value="deny"><input type="hidden" name="client" value="{{ node.name }}"><input type="hidden" name="target" value="{{ permission.target }}"><input type="hidden" name="network" value="{{ permission.network }}"><input type="hidden" name="ports" value="{{ permission.ports|join:',' }}"><button class="copy-button danger-quiet" type="submit">删除</button></form>{% endif %}{% endif %}</div>{% empty %}<div class="permission-empty"><strong>尚未开放内网访问</strong><span>需要时可在下方按目标和端口新增规则。</span></div>{% endfor %}
+                <div class="permission-list" data-permission-list data-permission-client="{{ node.name }}">
+                {% for permission in node.permissions %}<div class="permission-row{% if forloop.first %} first-permission-row{% endif %}"><span class="permission-target"><strong>{{ permission.target_label }}</strong>{% if permission.ip %}<small>{{ permission.ip }}</small>{% endif %}</span><span class="permission-scope"><strong>{{ permission.network_label }}</strong><small>{{ permission.ports_label }}</small></span>{% if network.writes_enabled %}{% if request.user.is_superuser or request.user.is_staff %}<form method="post" action="{% url 'network-permission-preview' %}">{% csrf_token %}<input type="hidden" name="operation" value="deny"><input type="hidden" name="client" value="{{ node.name }}"><input type="hidden" name="target" value="{{ permission.target }}"><input type="hidden" name="network" value="{{ permission.network }}"><input type="hidden" name="ports" value="{% if permission.network != 'all' %}{{ permission.ports_label }}{% endif %}"><button class="copy-button danger-quiet" type="submit">删除</button></form>{% endif %}{% endif %}</div>{% empty %}<div class="permission-empty"><strong>尚未开放内网访问</strong><span>需要时可在下方按目标和端口新增规则。</span></div>{% endfor %}
                 </div>
-                {% if network.writes_enabled and node.state == '已启用' %}{% if request.user.is_superuser or request.user.is_staff %}<details class="permission-add-panel"><summary><span><strong>新增访问权限</strong><small>选择目标和开放范围</small></span><span aria-hidden="true">＋</span></summary><form class="permission-form" data-permission-form method="post" action="{% url 'network-permission-preview' %}">{% csrf_token %}<input type="hidden" name="operation" value="allow"><input type="hidden" name="client" value="{{ node.name }}"><label>访问目标<select name="target" required>{% for target in node.available_targets %}<option value="{{ target.name }}">{{ target.label }}</option>{% endfor %}</select></label><label>开放范围<select name="port_mode" required><option value="all">全部协议与端口</option><option value="tcp">指定 TCP 端口</option><option value="udp">指定 UDP 端口</option></select></label><label data-permission-ports hidden>端口<input name="ports" inputmode="numeric" placeholder="例如 22,443" disabled></label><button class="secondary-button" type="submit">添加权限</button></form></details>{% endif %}{% endif %}
+                {% if network.writes_enabled and node.state == '已启用' %}{% if request.user.is_superuser or request.user.is_staff %}
+                <details class="permission-add-panel">
+                  <summary><span><strong>新增访问权限</strong><small>多条一起添加，无需离开本页</small></span><span aria-hidden="true">＋</span></summary>
+                  <form class="permission-form permission-batch" data-permission-form data-permission-batch data-preview-url="{% url 'network-permission-batch-preview' %}" data-execute-url="{% url 'network-permission-batch-execute' %}" method="post" action="{% url 'network-permission-preview' %}">
+                    {% csrf_token %}<input type="hidden" name="operation" value="allow"><input type="hidden" name="client" value="{{ node.name }}">
+                    <div class="permission-drafts" data-permission-rows>
+                      <fieldset class="permission-draft" data-permission-row>
+                        <legend>规则 <span data-rule-number>1</span></legend>
+                        <div class="permission-draft-fields">
+                          <label>访问目标<select name="target" required><option value="" disabled selected>选择访问目标</option>{% for target in node.available_targets %}<option value="{{ target.name }}">{{ target.label }}</option>{% endfor %}</select></label>
+                          <label>开放范围<select name="port_mode" required><option value="tcp">指定 TCP 端口</option><option value="udp">指定 UDP 端口</option><option value="all">全部协议与端口</option></select></label>
+                          <label data-permission-ports>端口或范围<input name="ports" type="text" inputmode="text" autocomplete="off" spellcheck="false" maxlength="65535" placeholder="例如 22,443,8000-8010" required></label>
+                          <button class="copy-button danger-quiet" type="button" data-permission-remove hidden>移除</button>
+                        </div>
+                      </fieldset>
+                    </div>
+                    <p class="privacy-note" data-permission-draft-help>范围含起止端口，可用英文逗号混合。选择“全部协议与端口”将开放目标的所有服务。</p>
+                    <div class="permission-batch-actions" data-permission-draft-actions>
+                      <button class="secondary-button" type="button" data-permission-add hidden>＋ 再加一条</button>
+                      <span class="muted" data-permission-draft-count hidden>1 / 20 条</span>
+                      <button class="action-button" type="submit" data-permission-preview>预览添加权限</button>
+                    </div>
+                    <noscript><p class="privacy-note">浏览器未启用 JavaScript，当前使用单条添加及独立确认页。</p></noscript>
+                    <section class="permission-batch-review" data-permission-review hidden aria-label="统一确认新增权限">
+                      <p class="eyebrow">统一确认 · 尚未应用</p>
+                      <h3 data-permission-review-title tabindex="-1">确认新增权限</h3>
+                      <p class="muted" data-permission-review-summary></p>
+                      <dl class="permission-review-facts" data-permission-review-facts></dl>
+                      <p class="privacy-note">执行前会再次核验状态。只追加本次规则，不删除已有权限。</p>
+                      <div class="permission-batch-actions">
+                        <button class="secondary-button" type="button" data-permission-edit>返回编辑</button>
+                        <button class="action-button" type="button" data-permission-confirm>确认添加</button>
+                      </div>
+                    </section>
+                    <div class="permission-batch-result" data-permission-result hidden>
+                      <p data-permission-status role="status" aria-live="polite" tabindex="-1"></p>
+                      <p class="form-error" data-permission-error role="alert" hidden></p>
+                      <div class="permission-batch-actions">
+                        <button class="secondary-button" type="button" data-permission-retry hidden>重新获取进度</button>
+                        <button class="secondary-button" type="button" data-permission-continue hidden>继续添加</button>
+                        <a class="text-link" data-permission-task-link hidden target="_blank" rel="noopener">在新页查看任务</a>
+                      </div>
+                    </div>
+                  </form>
+                </details>
+                {% endif %}{% endif %}
               </div>
             </details>
           </div>
         </details>
-        {% empty %}<article class="empty-state compact-empty"><strong>还没有节点</strong><p>展开上方“新增节点”开始创建。</p></article>{% endfor %}
+        {% empty %}<article class="empty-state compact-empty"><strong>还没有节点</strong><p>{% if network.writes_enabled and request.user.is_superuser or network.writes_enabled and request.user.is_staff %}展开上方“新增节点”开始创建。{% else %}请联系管理员添加设备，接入后将在这里显示。{% endif %}</p></article>{% endfor %}
       </div>
+      <div class="empty-state compact-empty" data-filter-empty hidden><strong>没有匹配的节点</strong><p>试试其他名称、地址或类型。</p></div>
       <p class="privacy-note">这里只显示名称、类型、虚拟 IP 和状态；私钥、UUID 与访问令牌只在明确领取时短暂返回。</p>
     </section>
+  {% endif %}
   </main>
 </div>
 <div class="qr-modal" data-qr-modal hidden><button class="qr-backdrop" type="button" data-qr-close aria-label="关闭二维码"></button><section class="qr-dialog" role="dialog" aria-modal="true" aria-labelledby="qr-title"><button class="qr-close" type="button" data-qr-close aria-label="关闭">×</button><p class="eyebrow">客户端配置</p><h2 id="qr-title" data-qr-title>配置二维码</h2><div class="qr-frame"><img class="qr-image" data-qr-image alt=""></div><p class="qr-note">请使用对应客户端扫描导入。关闭后二维码立即从页面移除。</p></section></div>

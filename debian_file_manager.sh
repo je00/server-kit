@@ -1572,6 +1572,7 @@ verify_clash_vless_relay_bundle() {
 
   python3 - "${relay_config}" "${bundle_dir}" <<'PYTHON'
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -1746,8 +1747,24 @@ for path in files:
         if isinstance(item, dict) and isinstance(item.get("use"), list)
     ]
     if modern_dns:
+        def rejects_empty_provider(group):
+            if group.get("empty-fallback") != "REJECT" or group.get("proxies") != ["REJECT"]:
+                return False
+            try:
+                pattern = re.compile(group.get("filter", ""))
+                return bool(pattern.search("REJECT")) and not any(
+                    pattern.search(name) for name in ("DIRECT", "PASS", "GLOBAL")
+                )
+            except (TypeError, re.error):
+                return False
+
+        stash_profile = any(
+            isinstance(item, dict) and str(item.get("name", "")).startswith("PRIVATE-")
+            for item in proxies
+        )
         has_provider_fallback = all(
-            item.get("empty-fallback") == primary_name
+            rejects_empty_provider(item) if stash_profile
+            else item.get("empty-fallback") == primary_name
             for item in provider_groups
         )
     else:

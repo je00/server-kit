@@ -1181,7 +1181,10 @@ activate_xray_candidate() {
   service_group="$(id -gn "${service_user}")"
   cp -a -- "${CONFIG_PATH}" "${backup}" || return 1
   if ! install -m 640 -o root -g "${service_group}" "${candidate}" "${CONFIG_PATH}"; then
-    cp -a -- "${backup}" "${CONFIG_PATH}" || true
+    cp -a -- "${backup}" "${CONFIG_PATH}" || {
+      echo 'SERVER_KIT_DIAGNOSTIC:permission_recovery_required' >&2
+      echo "恢复旧配置失败，需要人工核验；备份：${backup}" >&2
+    }
     return 1
   fi
 
@@ -1189,9 +1192,12 @@ activate_xray_candidate() {
     return 0
   fi
   if ! systemctl restart "${SERVICE_NAME}" || ! systemctl is-active --quiet "${SERVICE_NAME}"; then
-    cp -a -- "${backup}" "${CONFIG_PATH}"
-    systemctl restart "${SERVICE_NAME}" || true
-    echo "新配置启动失败，已恢复旧配置：${backup}" >&2
+    if cp -a -- "${backup}" "${CONFIG_PATH}" && systemctl restart "${SERVICE_NAME}" && systemctl is-active --quiet "${SERVICE_NAME}"; then
+      echo "新配置启动失败，已恢复旧配置：${backup}" >&2
+    else
+      echo 'SERVER_KIT_DIAGNOSTIC:permission_recovery_required' >&2
+      echo "新配置启动失败且旧配置恢复未完成，需要人工核验；备份：${backup}" >&2
+    fi
     return 1
   fi
 }
@@ -1199,8 +1205,10 @@ activate_xray_candidate() {
 apply_vless_access() {
   local candidate=""
   local backup=""
+  local policy_backup=""
+  local policy_existed=0
 
-  ensure_vless_access_helper
+  ensure_vless_access_helper || return 1
   [[ -r "${CONFIG_PATH}" ]] || {
     echo "Xray 配置不存在：${CONFIG_PATH}" >&2
     return 1
@@ -1209,27 +1217,46 @@ apply_vless_access() {
     echo "没有待应用策略。请先执行客户端、兼容模式或访问权限变更。" >&2
     return 1
   }
-  require_public_ssh_verification
+  require_public_ssh_verification || return 1
 
-  candidate="$(mktemp "${CONFIG_DIR}/.vless-access.XXXXXX.json")"
+  candidate="$(mktemp "${CONFIG_DIR}/.vless-access.XXXXXX.json")" || return 1
   backup="${CONFIG_PATH}.bak.$(date +%Y%m%d%H%M%S)"
-  trap 'rm -f -- "${candidate}"' RETURN
+  policy_backup="$(mktemp "${VLESS_ACCESS_PATH}.backup.XXXXXX")" || { rm -f -- "${candidate}"; return 1; }
+  trap 'rm -f -- "${candidate}" "${policy_backup}"; trap - RETURN' RETURN
+  if [[ -e "${VLESS_ACCESS_PATH}" ]]; then
+    policy_existed=1
+    cp -p -- "${VLESS_ACCESS_PATH}" "${policy_backup}" || return 1
+  fi
   vless_access_helper render \
     --config "${CONFIG_PATH}" \
     --output "${candidate}" \
     --public-tag "${PUBLIC_INBOUND_TAG}" \
-    --awg-network "${AWG_NETWORK}" >/dev/null
+    --awg-network "${AWG_NETWORK}" >/dev/null || return 1
   activate_xray_candidate "${candidate}" "${backup}" "1" || return 1
 
   if ! vless_access_helper commit; then
-    cp -a -- "${backup}" "${CONFIG_PATH}"
-    systemctl restart "${SERVICE_NAME}" || true
-    echo "无法提交活动策略，已恢复旧 Xray 配置。" >&2
+    if [[ "${policy_existed}" == "1" ]]; then
+      cp -p -- "${policy_backup}" "${VLESS_ACCESS_PATH}" || {
+        trap - RETURN
+        echo 'SERVER_KIT_DIAGNOSTIC:permission_recovery_required' >&2
+        echo "无法恢复活动策略；保留备份：${policy_backup}" >&2; return 1;
+      }
+    else
+      rm -f -- "${VLESS_ACCESS_PATH}"
+    fi
+    if cp -a -- "${backup}" "${CONFIG_PATH}" && systemctl restart "${SERVICE_NAME}" && systemctl is-active --quiet "${SERVICE_NAME}"; then
+      echo "无法提交活动策略，已恢复旧 Xray 配置。" >&2
+    else
+      trap - RETURN
+      rm -f -- "${candidate}"
+      echo 'SERVER_KIT_DIAGNOSTIC:permission_recovery_required' >&2
+      echo "活动策略提交失败且 Xray 恢复未完成，需要人工核验；备份：${backup}；策略：${policy_backup}" >&2
+    fi
     return 1
   fi
   record_vless_access_apply || echo "警告：服务已生效，但写入权限审计失败。" >&2
   [[ "${VLESS_SKIP_SSH_GATE}" == "1" ]] || rm -f -- "${PUBLIC_SSH_VERIFIED_PATH}"
-  rm -f -- "${candidate}"
+  rm -f -- "${candidate}" "${policy_backup}"
   trap - RETURN
   echo "VLESS 权限策略已应用，Xray 运行正常。"
   echo "活动策略：${VLESS_ACCESS_PATH}"
@@ -1599,7 +1626,7 @@ usage() {
   bash debian_vless_manager.sh client-list              查看客户端及内网权限
   bash debian_vless_manager.sh nodes                    查看全部 AWG/VLESS 节点
   bash debian_vless_manager.sh client-show <名称> [--reveal] 查看单个客户端
-  bash debian_vless_manager.sh allow <客户端> <节点|all> [端口列表] [tcp|udp|tcp,udp]
+  bash debian_vless_manager.sh allow <客户端> <节点|all> [端口列表或范围，如22,8000-8010] [tcp|udp|tcp,udp]
   bash debian_vless_manager.sh deny <客户端> <节点|all>  删除内网放行
   bash debian_vless_manager.sh plan                      预览待应用变化
   bash debian_vless_manager.sh apply                     校验、应用并失败回滚
@@ -1869,14 +1896,18 @@ main() {
       ;;
     allow)
       [[ -n "${2:-}" && -n "${3:-}" ]] || {
-        echo "用法：$0 allow <客户端> <节点|all> [端口列表]" >&2
+        echo "用法：$0 allow <客户端> <节点|all> [端口列表或范围，如22,8000-8010]" >&2
         exit 1
       }
       vless_access_helper allow "${2}" "${3}" "${4:-}" "${5:-tcp}"
       ;;
+    allow-batch)
+      [[ -n "${2:-}" && $# -eq 2 ]] || { echo "用法：allow-batch <客户端>（JSON 规则从标准输入读取）" >&2; return 1; }
+      vless_access_helper allow-batch "${2}"
+      ;;
     deny)
       [[ -n "${2:-}" && -n "${3:-}" ]] || {
-        echo "用法：$0 deny <客户端> <节点> [端口列表] [all|tcp|udp]" >&2
+        echo "用法：$0 deny <客户端> <节点> [端口列表或范围，如22,8000-8010] [all|tcp|udp]" >&2
         exit 1
       }
       if [[ -n "${4:-}" || -n "${5:-}" ]]; then

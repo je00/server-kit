@@ -134,13 +134,25 @@ def _normalize_airport(value: object) -> dict:
     if not isinstance(enabled, bool):
         raise ProxyResourceError("机场启用状态无效。")
     normalized_countries = _normalize_countries(countries)
-    return {
+    result = {
         "id": airport_id,
         "name": name.strip(),
         "url": url,
         "enabled": enabled,
         "countries": normalized_countries,
     }
+    if "bootstrap_dns" in value:
+        try:
+            try:
+                from .stash_bootstrap import normalize_inventory
+            except ImportError:
+                from stash_bootstrap import normalize_inventory
+            inventory = normalize_inventory(value["bootstrap_dns"], url)
+        except ValueError as error:
+            raise ProxyResourceError(str(error)) from None
+        if inventory is not None:
+            result["bootstrap_dns"] = inventory
+    return result
 
 
 def exit_publish_token(display_name: str) -> str:
@@ -492,6 +504,14 @@ def _apply_operation(config: dict, payload: dict) -> dict:
             target.update({"name": name, "enabled": enabled, "countries": countries})
             if url.strip():
                 target["url"] = url.strip()
+    elif operation == "airport_bootstrap_update":
+        target = next((item for item in airports if isinstance(item, dict) and item.get("id") == payload.get("airport_id")), None)
+        if target is None:
+            raise ProxyResourceError("要修改的机场不存在。")
+        inventory = payload.get("bootstrap_dns")
+        if not isinstance(inventory, dict) or inventory.get("url_sha256") != hashlib.sha256(target["url"].encode()).hexdigest():
+            raise ProxyResourceError("节点 DNS 清单与当前订阅不一致。")
+        target["bootstrap_dns"] = inventory
     elif operation == "airport_delete":
         airport_id = payload.get("airport_id")
         if not isinstance(airport_id, str) or not AIRPORT_ID_PATTERN.fullmatch(airport_id):

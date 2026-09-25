@@ -12,6 +12,16 @@ import re
 import sys
 from pathlib import Path
 
+try:
+    from lib.server_kit_permission_batch import append_rule, read_rules
+except ModuleNotFoundError:
+    from server_kit_permission_batch import append_rule, read_rules
+
+try:
+    from lib.server_kit_port_ranges import PortRangeError, format_ports, parse_ports as parse_port_ranges
+except ModuleNotFoundError:
+    from server_kit_port_ranges import PortRangeError, format_ports, parse_ports as parse_port_ranges
+
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 IFACE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
@@ -81,13 +91,10 @@ def pending_policy(active: Path, pending: Path) -> dict:
 
 
 def parse_ports(value: str) -> list[int]:
-    ports: set[int] = set()
-    for item in value.split(","):
-        item = item.strip()
-        if not item.isdigit() or not 1 <= int(item) <= 65535:
-            raise PolicyError(f"无效端口：{item or '(空)'}")
-        ports.add(int(item))
-    return sorted(ports)
+    try:
+        return parse_port_ranges(value)
+    except PortRangeError as error:
+        raise PolicyError(str(error)) from error
 
 
 def parse_peers(path: Path) -> dict[str, str]:
@@ -220,6 +227,29 @@ def change(args: argparse.Namespace) -> None:
     write_json(args.pending, policy)
 
 
+def allow_batch(args: argparse.Namespace) -> None:
+    """Stage one complete candidate; a bad later row never writes a partial batch."""
+    rules = read_rules(sys.stdin)
+    peers = parse_peers(args.peers)
+    require_client(args.client, peers)
+    if args.pending.exists():
+        raise PolicyError("存在尚未处理的 AWG 待应用策略。")
+    policy = normalize_policy(load_json(args.active, empty_policy()))
+    client = policy["clients"].setdefault(args.client, {"mode": "unrestricted", "allow": []})
+    for rule in rules:
+        target, address = resolve_target(rule["target"], peers, args.server_ip, args.network_cidr)
+        if target == args.client:
+            raise PolicyError("不能把节点自身作为访问目标。")
+        if target == "all" and rule["network"] == "all":
+            if client.get("mode", "unrestricted") == "unrestricted":
+                raise PolicyError("该节点已经具有全部访问权限。")
+            client["mode"] = "unrestricted"
+        else:
+            append_rule(client["allow"], rule, address)
+    # Only append permissions / broaden access; never remove management access.
+    write_json(args.pending, policy)
+
+
 def clean_permissions(value: object) -> list[dict]:
     if not isinstance(value, list):
         return []
@@ -250,7 +280,7 @@ def clean_permissions(value: object) -> list[dict]:
 
 
 def nft_port_set(ports: list[int]) -> str:
-    return "{ " + ", ".join(str(port) for port in ports) + " }"
+    return "{ " + format_ports(ports, separator=", ") + " }"
 
 
 def render_nft(args: argparse.Namespace) -> None:
@@ -387,6 +417,9 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("client")
     command.add_argument("arguments", nargs="*")
     command.set_defaults(function=change)
+    command = commands.add_parser("allow-batch")
+    command.add_argument("client")
+    command.set_defaults(function=allow_batch)
     command = commands.add_parser("render-nft")
     command.add_argument("--policy", type=Path, required=True)
     command.add_argument("--iface", required=True)

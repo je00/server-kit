@@ -1,11 +1,66 @@
 "use strict";
 
+const modalOpeners = new WeakMap();
+let feedbackTimer;
+
+function showFeedback(message) {
+  const notice = document.querySelector("[data-interaction-feedback]");
+  if (!notice) return;
+  window.clearTimeout(feedbackTimer);
+  notice.textContent = message;
+  notice.hidden = false;
+  feedbackTimer = window.setTimeout(() => { notice.hidden = true; }, 6500);
+}
+
+function safeRemoveSessionItem(key) {
+  try { window.sessionStorage.removeItem(key); } catch (_error) { /* Private browsing can disable storage. */ }
+}
+
+function modalFocusable(modal) {
+  const dialog = modal.querySelector('[role="dialog"]') || modal;
+  return [...dialog.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => !element.closest("[hidden]") && element.getClientRects().length);
+}
+
+function openManagedModal(modal, opener = document.activeElement) {
+  if (!modal) return;
+  modalOpeners.set(modal, opener);
+  modal.hidden = false;
+  document.body.classList.add("modal-open");
+  modalFocusable(modal)[0]?.focus();
+}
+
+function closeManagedModal(modal) {
+  if (!modal || modal.hidden) return;
+  modal.hidden = true;
+  if (!document.querySelector(".qr-modal:not([hidden])")) document.body.classList.remove("modal-open");
+  const opener = modalOpeners.get(modal);
+  if (opener?.isConnected) opener.focus();
+  modalOpeners.delete(modal);
+}
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab") return;
+  const modal = document.querySelector(".qr-modal:not([hidden])");
+  if (!modal) return;
+  const focusable = modalFocusable(modal);
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!first) { event.preventDefault(); return; }
+  if (event.shiftKey && (document.activeElement === first || !modal.contains(document.activeElement))) {
+    event.preventDefault(); last.focus();
+  } else if (!event.shiftKey && (document.activeElement === last || !modal.contains(document.activeElement))) {
+    event.preventDefault(); first.focus();
+  }
+});
+
 async function copyText(value) {
   if (navigator.clipboard && window.isSecureContext) {
     await navigator.clipboard.writeText(value);
     return;
   }
   const input = document.createElement("textarea");
+  const previousFocus = document.activeElement;
   input.value = value;
   input.setAttribute("readonly", "");
   input.style.position = "fixed";
@@ -14,6 +69,7 @@ async function copyText(value) {
   input.select();
   const copied = document.execCommand("copy");
   input.remove();
+  previousFocus?.focus();
   if (!copied) throw new Error("复制失败");
 }
 
@@ -37,8 +93,7 @@ function openSensitiveAuthModal(button) {
     error.hidden = true;
   }
   password.value = "";
-  modal.hidden = false;
-  document.body.classList.add("modal-open");
+  openManagedModal(modal, button);
   window.setTimeout(() => password.focus(), 0);
   return true;
 }
@@ -48,8 +103,7 @@ function closeSensitiveAuthModal() {
   if (!modal || modal.hidden) return;
   const password = modal.querySelector("[data-sensitive-auth-password]");
   const error = modal.querySelector("[data-sensitive-auth-error]");
-  modal.hidden = true;
-  document.body.classList.remove("modal-open");
+  closeManagedModal(modal);
   if (password) password.value = "";
   if (error) {
     error.textContent = "";
@@ -73,6 +127,7 @@ document.addEventListener("click", async (event) => {
       button.textContent = "已复制";
     } catch (_error) {
       button.textContent = "复制失败";
+      showFeedback("复制失败。请检查浏览器剪贴板权限，或手动选择内容复制。");
     }
     window.setTimeout(() => {
       button.textContent = original;
@@ -127,8 +182,8 @@ document.addEventListener("click", async (event) => {
       image.src = `data:image/png;base64,${payload.image_base64}`;
       image.alt = `${payload.name} 的二维码`;
       title.textContent = payload.name;
-      modal.hidden = false;
-      document.body.classList.add("modal-open");
+      secretButton.disabled = false;
+      openManagedModal(modal, secretButton);
       modal.querySelector(".qr-close").focus();
       secretButton.textContent = original;
     } else if (secretButton.dataset.secretAction === "view") {
@@ -138,15 +193,16 @@ document.addEventListener("click", async (event) => {
       if (!modal || !value || !title || !payload.value) throw new Error("敏感内容无效");
       value.textContent = payload.value;
       title.textContent = payload.name || "查看配置";
-      modal.hidden = false;
-      document.body.classList.add("modal-open");
+      secretButton.disabled = false;
+      openManagedModal(modal, secretButton);
       modal.querySelector("[data-secret-close]").focus();
       secretButton.textContent = original;
     } else {
       throw new Error("操作未登记");
     }
-  } catch (_error) {
+  } catch (error) {
     secretButton.textContent = "操作失败";
+    showFeedback(error.message || "读取失败，请稍后重试。");
   }
   window.setTimeout(() => {
     secretButton.textContent = original;
@@ -158,8 +214,7 @@ function closeQrModal() {
   const modal = document.querySelector("[data-qr-modal]");
   if (!modal || modal.hidden) return;
   const image = modal.querySelector("[data-qr-image]");
-  modal.hidden = true;
-  document.body.classList.remove("modal-open");
+  closeManagedModal(modal);
   if (image) {
     image.removeAttribute("src");
     image.alt = "";
@@ -170,8 +225,7 @@ function closeSecretModal() {
   const modal = document.querySelector("[data-secret-modal]");
   if (!modal || modal.hidden) return;
   const value = modal.querySelector("[data-secret-value]");
-  modal.hidden = true;
-  document.body.classList.remove("modal-open");
+  closeManagedModal(modal);
   if (value) value.textContent = "";
 }
 
@@ -201,8 +255,7 @@ document.querySelectorAll("[data-sensitive-auth-form]").forEach((form) => {
       const pending = pendingSensitiveAction;
       pendingSensitiveAction = null;
       const modal = form.closest("[data-sensitive-auth-modal]");
-      if (modal) modal.hidden = true;
-      document.body.classList.remove("modal-open");
+      closeManagedModal(modal);
       form.reset();
       pending?.click();
     } catch (failure) {
@@ -233,7 +286,11 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-document.querySelectorAll(".country-picker").forEach((picker) => {
+const initializedResourceEditors = new WeakSet();
+function initializeResourceEditors(scope = document) {
+scope.querySelectorAll(".country-picker").forEach((picker) => {
+  if (initializedResourceEditors.has(picker)) return;
+  initializedResourceEditors.add(picker);
   const inputs = Array.from(picker.querySelectorAll('input[name="countries"]'));
   if (!inputs.length) return;
   const allRegions = inputs.find((input) => input.value === "all");
@@ -256,7 +313,9 @@ document.querySelectorAll(".country-picker").forEach((picker) => {
   });
 });
 
-document.querySelectorAll("[data-exit-input-form]").forEach((form) => {
+scope.querySelectorAll("[data-exit-input-form]").forEach((form) => {
+  if (initializedResourceEditors.has(form)) return;
+  initializedResourceEditors.add(form);
   const modes = Array.from(form.querySelectorAll('input[name="exit_input_mode"]'));
   const panels = Array.from(form.querySelectorAll("[data-exit-input-panel]"));
 
@@ -275,8 +334,12 @@ document.querySelectorAll("[data-exit-input-form]").forEach((form) => {
   modes.forEach((input) => input.addEventListener("change", syncExitInputMode));
   syncExitInputMode();
 });
+}
+initializeResourceEditors();
+document.addEventListener("server-kit:content-updated", () => initializeResourceEditors());
 
 document.querySelectorAll("[data-permission-form]").forEach((form) => {
+  if (form.hasAttribute("data-permission-batch")) return;
   const portMode = form.querySelector('select[name="port_mode"]');
   const ports = form.querySelector('input[name="ports"]');
   const portsField = form.querySelector("[data-permission-ports]");
@@ -427,14 +490,62 @@ if (activeGuide) {
     }, 0);
   }
 } else if (guideReturnBar && storedGuideReturn?.url && storedGuideReturn?.label) {
-  guideReturnBar.href = storedGuideReturn.url;
-  guideReturnBar.textContent = storedGuideReturn.label;
-  guideReturnBar.hidden = false;
+  try {
+    const returnUrl = new URL(storedGuideReturn.url, window.location.href);
+    if (returnUrl.origin === new URL(window.location.href).origin && returnUrl.pathname === "/guides/nodes/") {
+      guideReturnBar.href = returnUrl.href;
+      guideReturnBar.textContent = storedGuideReturn.label;
+      guideReturnBar.hidden = false;
+    }
+  } catch (_error) { safeRemoveSessionItem(GUIDE_RETURN_KEY); }
 }
 
-if (document.querySelector("[data-task-refresh]")) {
-  window.setTimeout(() => window.location.reload(), 2000);
+// Refresh only task content. Never interrupt an active control or text selection.
+let taskRefreshPaused = false;
+let taskRefreshBusy = false;
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-task-refresh-toggle]");
+  if (!button) return;
+  taskRefreshPaused = !taskRefreshPaused;
+  button.textContent = taskRefreshPaused ? "继续自动更新" : "暂停自动更新";
+  button.setAttribute("aria-pressed", String(taskRefreshPaused));
+  const status = document.querySelector("[data-task-refresh-status]");
+  if (status) status.textContent = taskRefreshPaused ? "已暂停页面更新，后台任务仍会继续。" : "每 5 秒更新状态；操作或选择文字时暂缓更新。";
+});
+
+async function refreshTaskContent() {
+  const current = document.querySelector("[data-task-live][data-task-refresh]");
+  const isReading = () => document.hidden || Boolean(window.getSelection()?.toString())
+    || (current?.contains(document.activeElement) && document.activeElement !== current
+      && !document.activeElement.matches("[data-task-refresh-toggle]"));
+  if (!current || taskRefreshPaused || taskRefreshBusy || isReading()) return;
+  taskRefreshBusy = true;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(window.location.href, {credentials: "same-origin", cache: "no-store", headers: {Accept: "text/html"}, signal: controller.signal});
+    if (!response.ok || response.redirected) throw new Error("状态更新失败；如登录已过期，请刷新后重新登录。");
+    const parsed = new DOMParser().parseFromString(await response.text(), "text/html");
+    const next = parsed.querySelector("[data-task-live]");
+    if (!next) throw new Error("暂时无法读取任务状态，请稍后刷新。");
+    if (taskRefreshPaused || isReading()) return;
+    const returnToToggle = document.activeElement.matches("[data-task-refresh-toggle]");
+    current.replaceChildren(...next.childNodes);
+    formatLocalTimes(current);
+    if (!next.hasAttribute("data-task-refresh")) current.removeAttribute("data-task-refresh");
+    document.title = parsed.title;
+    const status = current.querySelector("[data-task-refresh-status]");
+    if (status) status.textContent = "状态已更新 · 每 5 秒自动检查";
+    if (returnToToggle) (current.querySelector("[data-task-refresh-toggle]") || current).focus();
+  } catch (error) {
+    const status = current.querySelector("[data-task-refresh-status]");
+    if (status) status.textContent = error.name === "AbortError" ? "更新超时，将自动重试。" : error.message;
+  } finally {
+    window.clearTimeout(timeout);
+    taskRefreshBusy = false;
+  }
 }
+if (document.querySelector("[data-task-refresh]")) window.setInterval(refreshTaskContent, 5000);
 
 const AWG_GENERATOR_SESSION_KEY = "server-kit-awg-generated-bundle-v1";
 const AWG_GENERATOR_TTL = 5 * 60 * 1000;
@@ -453,13 +564,17 @@ function downloadGeneratedText(name, value) {
 function readGeneratedBundle() {
   try {
     const value = JSON.parse(window.sessionStorage.getItem(AWG_GENERATOR_SESSION_KEY) || "null");
-    if (!value || !Number.isFinite(value.expiresAt) || value.expiresAt <= Date.now()) {
-      window.sessionStorage.removeItem(AWG_GENERATOR_SESSION_KEY);
+    if (!value || !Number.isFinite(value.expiresAt) || value.expiresAt <= Date.now()
+      || value.expiresAt > Date.now() + AWG_GENERATOR_TTL
+      || typeof value.enrollmentToken !== "string" || !value.enrollmentToken
+      || !Array.isArray(value.profiles) || !value.profiles.length || value.profiles.length > 5
+      || value.profiles.some((profile) => !profile || ["config", "fileName", "label"].some((key) => typeof profile[key] !== "string" || !profile[key]))) {
+      safeRemoveSessionItem(AWG_GENERATOR_SESSION_KEY);
       return null;
     }
     return value;
   } catch (_error) {
-    window.sessionStorage.removeItem(AWG_GENERATOR_SESSION_KEY);
+    safeRemoveSessionItem(AWG_GENERATOR_SESSION_KEY);
     return null;
   }
 }
@@ -483,8 +598,7 @@ function showGeneratedQr(profile) {
   image.src = code.createDataURL(5, 16);
   image.alt = `${profile.label}的配置二维码`;
   title.textContent = profile.label;
-  modal.hidden = false;
-  document.body.classList.add("modal-open");
+  openManagedModal(modal);
   modal.querySelector(".qr-close")?.focus();
 }
 
@@ -498,9 +612,19 @@ document.querySelectorAll("[data-awg-generator]").forEach((generator) => {
   const reset = generator.querySelector("[data-awg-generator-reset]");
   const status = generator.querySelector("[data-awg-generator-status]");
   let currentBundle = null;
+  let expiryTimer;
+
+  function requireCurrentBundle() {
+    if (currentBundle && currentBundle.expiresAt > Date.now()) return true;
+    clearBundle(false);
+    showFeedback("临时配置已过期并清除，请重新生成。");
+    return false;
+  }
 
   function renderBundle(bundle) {
     currentBundle = bundle;
+    window.clearTimeout(expiryTimer);
+    expiryTimer = window.setTimeout(() => { clearBundle(false); showFeedback("临时客户端配置已自动清除。"); }, Math.max(0, bundle.expiresAt - Date.now()));
     list.replaceChildren(...bundle.profiles.map((profile) => {
       const row = document.createElement("div");
       row.className = "profile-row";
@@ -512,21 +636,27 @@ document.querySelectorAll("[data-awg-generator]").forEach((generator) => {
       download.type = "button";
       download.className = "copy-button";
       download.textContent = "下载";
-      download.addEventListener("click", () => downloadGeneratedText(profile.fileName, profile.config));
+      download.addEventListener("click", () => { if (requireCurrentBundle()) downloadGeneratedText(profile.fileName, profile.config); });
       const copy = document.createElement("button");
       copy.type = "button";
       copy.className = "copy-button";
       copy.textContent = "复制";
       copy.addEventListener("click", async () => {
-        await copyText(profile.config);
-        copy.textContent = "已复制";
+        if (!requireCurrentBundle()) return;
+        try {
+          await copyText(profile.config);
+          copy.textContent = "已复制";
+        } catch (_error) {
+          copy.textContent = "复制失败";
+          showFeedback("复制失败，请检查剪贴板权限，或使用下载配置。");
+        }
         window.setTimeout(() => { copy.textContent = "复制"; }, 1400);
       });
       const qr = document.createElement("button");
       qr.type = "button";
       qr.className = "copy-button qr-button";
       qr.textContent = "二维码";
-      qr.addEventListener("click", () => showGeneratedQr(profile));
+      qr.addEventListener("click", () => { if (requireCurrentBundle()) showGeneratedQr(profile); });
       actions.append(download, copy, qr);
       row.append(label, actions);
       return row;
@@ -538,14 +668,16 @@ document.querySelectorAll("[data-awg-generator]").forEach((generator) => {
     status.textContent = `配置只保存在当前标签页，约 ${remaining} 分钟后自动清除。`;
   }
 
-  function clearBundle() {
+  function clearBundle(focus = true) {
+    window.clearTimeout(expiryTimer);
     currentBundle = null;
-    window.sessionStorage.removeItem(AWG_GENERATOR_SESSION_KEY);
+    safeRemoveSessionItem(AWG_GENERATOR_SESSION_KEY);
     list.replaceChildren();
     token.value = "";
     result.hidden = true;
     form.hidden = false;
-    form.querySelector('input[name="generator_name"]')?.focus();
+    closeQrModal();
+    if (focus) form.querySelector('input[name="generator_name"]')?.focus();
   }
 
   form?.addEventListener("submit", (event) => {
@@ -583,15 +715,23 @@ document.querySelectorAll("[data-awg-generator]").forEach((generator) => {
   });
 
   enrollmentForm?.addEventListener("submit", (event) => {
-    if (!currentBundle?.profiles?.length) {
+    if (!requireCurrentBundle()) {
       event.preventDefault();
-      clearBundle();
       return;
     }
     downloadGeneratedText(currentBundle.profiles[0].fileName, currentBundle.profiles[0].config);
   });
 
-  reset?.addEventListener("click", clearBundle);
+  reset?.addEventListener("click", () => clearBundle());
+  document.addEventListener("visibilitychange", () => {
+    if (currentBundle && currentBundle.expiresAt <= Date.now()) clearBundle(false);
+  });
+  window.addEventListener("pageshow", () => {
+    if (currentBundle && currentBundle.expiresAt <= Date.now()) clearBundle(false);
+  });
+  document.addEventListener("submit", (event) => {
+    if (!event.defaultPrevented && new URL(event.target.action, window.location.href).pathname === "/logout/") clearBundle(false);
+  });
   const restored = readGeneratedBundle();
   if (restored) renderBundle(restored);
 });
@@ -617,3 +757,100 @@ document.querySelectorAll("[data-dynamic-dns-form]").forEach((form) => {
   provider?.addEventListener("change", syncProviderFields);
   syncProviderFields();
 });
+
+document.querySelectorAll("[data-list-filter]").forEach((container) => {
+  const input = container.querySelector("[data-filter-input]");
+  const empty = container.querySelector("[data-filter-empty]");
+  if (!input) return;
+  const count = document.createElement("span");
+  count.setAttribute("data-filter-count", "");
+  count.setAttribute("role", "status");
+  input.parentElement.appendChild(count);
+  const sync = () => {
+    const items = [...container.querySelectorAll("[data-filter-item]")];
+    const query = input.value.trim().toLocaleLowerCase();
+    let visible = 0;
+    items.forEach((item) => {
+      const label = item.dataset.filterLabel || item.textContent;
+      item.hidden = !label.toLocaleLowerCase().includes(query);
+      if (!item.hidden) visible += 1;
+    });
+    count.textContent = query ? `${visible} / ${items.length} 项匹配` : `共 ${items.length} 项`;
+    if (empty) empty.hidden = !query || visible !== 0 || items.length === 0;
+  };
+  input.addEventListener("input", sync);
+  document.addEventListener("server-kit:content-updated", sync);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { input.value = ""; sync(); }
+  });
+  sync();
+});
+
+document.querySelectorAll("[data-mobile-menu]").forEach((menu) => {
+  const close = () => { menu.open = false; menu.querySelector("summary")?.focus(); };
+  menu.querySelector("[data-mobile-menu-close]")?.addEventListener("click", close);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && menu.open) { event.preventDefault(); close(); }
+  });
+  document.addEventListener("click", (event) => {
+    if (menu.open && !menu.contains(event.target)) menu.open = false;
+  });
+});
+
+function revealAnchorTarget() {
+  if (!window.location.hash) return;
+  let target;
+  try { target = document.getElementById(decodeURIComponent(window.location.hash.slice(1))); }
+  catch (_error) { return; }
+  if (!target) return;
+  let current = target;
+  while (current) {
+    if (current.tagName === "DETAILS") current.open = true;
+    current = current.parentElement;
+  }
+  target.scrollIntoView({block: "start"});
+}
+window.addEventListener("hashchange", revealAnchorTarget);
+if (!document.querySelector("[data-platform-guide]")) revealAnchorTarget();
+
+// Keep the clicked submitter enabled: its name/value may select the operation.
+// Prevent a second submit without changing the actual request payload.
+const submittingForms = new Map();
+document.addEventListener("submit", (event) => {
+  const form = event.target;
+  if (event.defaultPrevented || form.method?.toLowerCase() !== "post" || (form.target && form.target !== "_self")) return;
+  if (submittingForms.has(form)) { event.preventDefault(); return; }
+  const button = event.submitter;
+  const original = button?.textContent;
+  const release = () => {
+    if (button) {
+      button.removeAttribute("aria-disabled");
+      button.textContent = original;
+    }
+    form.removeAttribute("aria-busy");
+    submittingForms.delete(form);
+  };
+  submittingForms.set(form, release);
+  form.setAttribute("aria-busy", "true");
+  if (button) { button.setAttribute("aria-disabled", "true"); button.textContent = "正在提交…"; }
+  if (new URL(form.action, window.location.href).pathname === "/logout/") safeRemoveSessionItem(AWG_GENERATOR_SESSION_KEY);
+  window.setTimeout(release, 15000);
+});
+window.addEventListener("pageshow", () => {
+  for (const release of submittingForms.values()) release();
+});
+
+function formatLocalTimes(scope = document) {
+  const formatter = new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit",
+    minute: "2-digit", second: "2-digit", hour12: false, timeZoneName: "short",
+  });
+  scope.querySelectorAll("time[data-local-time][datetime]").forEach((element) => {
+    const date = new Date(element.getAttribute("datetime"));
+    if (Number.isNaN(date.getTime())) return;
+    element.textContent = formatter.format(date);
+    element.title = `原始时间：${element.getAttribute("datetime")}`;
+  });
+}
+formatLocalTimes();
+document.querySelector("[data-focus-preview]")?.focus();

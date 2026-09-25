@@ -2263,15 +2263,16 @@ change_network_permission_json() {
   if [[ "${operation}" == "allow" ]]; then
     if [[ -n "${ports}" || -n "${network}" ]]; then
       [[ "${network}" == "tcp" || "${network}" == "udp" ]] || { fail "权限协议只能是 TCP 或 UDP。"; return 1; }
-      [[ "${ports}" =~ ^[0-9]+(,[0-9]+)*$ ]] || { fail "端口列表格式不正确。"; return 1; }
     fi
   elif [[ -n "${ports}" || -n "${network}" ]]; then
     if [[ "${network}" == "all" ]]; then
       [[ -z "${ports}" ]] || { fail "全部协议权限不接受端口列表。"; return 1; }
     else
       [[ "${network}" == "tcp" || "${network}" == "udp" ]] || { fail "权限协议只能是全部、TCP 或 UDP。"; return 1; }
-      [[ "${ports}" =~ ^[0-9]+(,[0-9]+)*$ ]] || { fail "端口列表格式不正确。"; return 1; }
     fi
+  fi
+  if [[ "${network}" == "tcp" || "${network}" == "udp" ]]; then
+    ports="$(python3 "${SCRIPT_DIR}/lib/server_kit_port_ranges.py" "${ports}")" || return 1
   fi
   output="$(mktemp)"
   if [[ "${kind}" == "awg" ]]; then
@@ -2307,6 +2308,50 @@ import json
 import sys
 value = {"schema_version": 1, "operation": sys.argv[1], "client": sys.argv[2], "target": sys.argv[3]}
 json.dump(value, sys.stdout, ensure_ascii=False)
+print()
+PYTHON
+}
+
+add_network_permissions_json() {
+  local client="$1"
+  local output=""
+  [[ "${SERVER_KIT_NETWORK_WRITES:-0}" == "1" ]] || { fail "节点写操作未启用。"; return 1; }
+  [[ "${client}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]] || { fail "客户端节点名称格式不正确。"; return 1; }
+  output="$(mktemp)" || return 1
+  # The caller holds the existing management-change lock. Both helpers validate
+  # all rows before writing one candidate, then apply once without restarting AWG.
+  if awk -F '\t' -v name="${client}" '$1 == name {found=1} END {exit !found}' "${AWG_PEERS}" 2>/dev/null; then
+    [[ ! -e "${AWG_ACCESS_PENDING_POLICY}" ]] || { rm -f -- "${output}"; fail "存在尚未处理的 AWG 待应用策略。"; return 1; }
+    if ! bash "${AWG_MANAGER}" access-allow-batch "${client}" >"${output}" 2>&1; then
+      if grep -Fqx 'SERVER_KIT_DIAGNOSTIC:permission_recovery_required' "${output}"; then
+        printf '%s\n' 'SERVER_KIT_DIAGNOSTIC:permission_recovery_required' >&2
+      fi
+      rm -f -- "${output}"
+      fail "AWG 批量权限操作失败；请重新读取实际状态。"
+      return 1
+    fi
+  else
+    [[ ! -e "${VLESS_PENDING_POLICY}" ]] || { rm -f -- "${output}"; fail "存在尚未处理的 VLESS 待应用策略。"; return 1; }
+    [[ -r "${XRAY_CONFIG_PATH}" ]] || { rm -f -- "${output}"; fail "VLESS 服务未完整安装。"; return 1; }
+    if ! bash "${VLESS_MANAGER}" allow-batch "${client}" >"${output}" 2>&1; then
+      rm -f -- "${output}"
+      fail "VLESS 批量权限校验失败；没有应用变更。"
+      return 1
+    fi
+    if ! VLESS_SKIP_SSH_GATE=1 bash "${VLESS_MANAGER}" apply >>"${output}" 2>&1; then
+      if grep -Fqx 'SERVER_KIT_DIAGNOSTIC:permission_recovery_required' "${output}"; then
+        printf '%s\n' 'SERVER_KIT_DIAGNOSTIC:permission_recovery_required' >&2
+      fi
+      rm -f -- "${VLESS_PENDING_POLICY}" "${output}"
+      fail "VLESS 批量权限应用失败；请重新读取实际状态。"
+      return 1
+    fi
+  fi
+  rm -f -- "${output}"
+  python3 - "${client}" <<'PYTHON'
+import json
+import sys
+json.dump({"schema_version": 1, "operation": "batch", "client": sys.argv[1]}, sys.stdout)
 print()
 PYTHON
 }
@@ -3466,7 +3511,9 @@ main() {
           ;;
         permission)
           acquire_change_lock
-          if [[ $# -eq 6 && "${3:-}" == "allow" && "${6:-}" == "--json" ]]; then
+          if [[ $# -eq 5 && "${3:-}" == "batch" && "${5:-}" == "--json" ]]; then
+            add_network_permissions_json "${4}"
+          elif [[ $# -eq 6 && "${3:-}" == "allow" && "${6:-}" == "--json" ]]; then
             change_network_permission_json allow "${4}" "${5}"
           elif [[ $# -eq 8 && "${3:-}" == "allow" && "${8:-}" == "--json" ]]; then
             change_network_permission_json allow "${4}" "${5}" "${6}" "${7}"

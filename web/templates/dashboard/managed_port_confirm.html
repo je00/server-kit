@@ -5,7 +5,7 @@
 {% block body %}
 <div class="app-shell">
   {% include "dashboard/_navigation.html" %}
-  <main class="content detail-content narrow-content">
+  <main id="main-content" tabindex="-1" class="content detail-content narrow-content">
     <a class="back-link" href="{% url 'service-detail' service_id %}">← 返回服务详情</a>
     <header class="page-header"><div><p class="eyebrow">root 实时影响预览</p><h1>{{ task.preview.title }}</h1><p class="muted">{{ task.preview.summary }}</p></div><span class="stage-badge">{{ task.state_label }}</span></header>
     <div class="alert danger">公网或上游网络仍可能封禁新端口。变更完成后，请用外部网络实测新链接或备用入口。</div>

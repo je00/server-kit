@@ -4,22 +4,22 @@
   const storageKey = "server-kit-theme";
   const themes = new Set(["dark", "light", "sky"]);
   const themeColors = {
-    dark: "#080b12",
-    light: "#f4f7fb",
-    sky: "#eaf7ff",
+    dark: "#171a1b",
+    light: "#f5f4f0",
+    sky: "#f0f6f8",
   };
 
   function readTheme() {
     try {
       const saved = window.localStorage.getItem(storageKey);
-      return themes.has(saved) ? saved : "dark";
+      return themes.has(saved) ? saved : "light";
     } catch (_error) {
-      return "dark";
+      return "light";
     }
   }
 
   function applyTheme(theme, persist = false) {
-    const selected = themes.has(theme) ? theme : "dark";
+    const selected = themes.has(theme) ? theme : "light";
     document.documentElement.dataset.theme = selected;
     const themeColor = document.querySelector('meta[name="theme-color"]');
     if (themeColor) themeColor.setAttribute("content", themeColors[selected]);

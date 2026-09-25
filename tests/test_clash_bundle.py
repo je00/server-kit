@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import copy
 import re
 import subprocess
 import sys
@@ -167,7 +169,14 @@ class ClashBundleTests(unittest.TestCase):
                 "vless_node_name": "SERVER.RELAY.VLESS",
             }), encoding="utf-8")
             (root / "clash-inputs.json").write_text(json.dumps({
-                "version": 4, "airports": [], "default_exit_id": "111111111111",
+                "version": 4, "airports": [{
+                    "id": "111111111111", "name": "主用", "enabled": True,
+                    "url": "https://example.com/subscription.yaml", "countries": ["hk"],
+                    "bootstrap_dns": {
+                        "url_sha256": hashlib.sha256(b"https://example.com/subscription.yaml").hexdigest(),
+                        "domains": ["entry.example.net"],
+                    },
+                }], "default_exit_id": "111111111111",
                 "awg_exit_selections": {
                     "home-desk": ["111111111111", "222222222222"],
                     "home-iphone": ["111111111111", "222222222222"],
@@ -304,6 +313,9 @@ class ClashBundleTests(unittest.TestCase):
             self.assertIn("  - RULE-SET,applications,DIRECT\n", vless_text)
             self.assertIn("  # - RULE-SET,direct,DIRECT\n", vless_text)
             self.assertTrue(vless["proxy-providers"]["airport-111111111111"]["health-check"]["enable"])
+            self.assertEqual(vless["proxy-providers"]["airport-111111111111"]["benchmark-url"],
+                             "http://cp.cloudflare.com/generate_204")
+            self.assertEqual(vless["proxy-providers"]["airport-111111111111"]["benchmark-timeout"], 5)
             vless_proxy_members = next(
                 item for item in vless["proxy-groups"] if item["name"] == "PROXY"
             )["proxies"]
@@ -317,8 +329,18 @@ class ClashBundleTests(unittest.TestCase):
             airport_group = next(item for item in vless["proxy-groups"] if item["name"] == "机场 · 主用 · 香港")
             self.assertEqual(
                 airport_group["empty-fallback"],
-                next(item for item in vless["proxy-groups"] if item["name"] == "SERVER.RELAY.VLESS.Primary")["proxies"][0],
+                "REJECT",
             )
+            self.assertEqual(airport_group["proxies"], ["REJECT"])
+            self.assertIsNotNone(re.search(airport_group["filter"], "REJECT"))
+            self.assertIsNone(re.search(airport_group["filter"], "DIRECT"))
+            self.assertEqual(vless["dns"]["nameserver-policy"]["entry.example.net"], [
+                "https://223.5.5.5/dns-query", "https://1.12.12.12/dns-query",
+            ])
+            self.assertNotIn("entry.example.net", awg["dns"]["nameserver-policy"])
+            self.assertEqual(vless["dns"]["nameserver-policy"]["geosite:cn"], [
+                "https://223.5.5.5/dns-query", "https://1.12.12.12/dns-query",
+            ])
             self.assertEqual(vless["find-process-mode"], "always")
             self.assertTrue(vless["dns"]["respect-rules"])
             self.assertTrue(vless["dns"]["follow-rule"])
@@ -444,6 +466,9 @@ class ClashBundleTests(unittest.TestCase):
                 [next(item for item in legacy["proxy-groups"] if item["name"] == "SERVER.RELAY.VLESS.Primary")["proxies"][0]],
             )
             self.assertNotIn("proxy", legacy["proxy-providers"]["airport-111111111111"])
+            self.assertEqual(legacy["proxy-providers"]["airport-111111111111"]["benchmark-url"],
+                             "http://cp.cloudflare.com/generate_204")
+            self.assertEqual(legacy["proxy-providers"]["airport-111111111111"]["benchmark-timeout"], 5)
             self.assertNotIn("proxy", legacy["rule-providers"]["applications"])
             self.assertEqual(
                 next(item for item in legacy["proxy-groups"] if item["name"] == "PROXY")["proxies"][:2],
@@ -495,7 +520,12 @@ class ClashBundleTests(unittest.TestCase):
                     self.assertEqual(nodes["EXIT.Backup"]["server"], "exit-two.test")
                     self.assertEqual(protected["proxy-groups"], previous["proxy-groups"])
                     self.assertEqual(protected["rules"], previous["rules"])
-                    self.assertEqual(protected["dns"], previous["dns"])
+                    expected_dns = copy.deepcopy(previous["dns"])
+                    if name == "home-iphone":
+                        # Replacing the client-side exit removes its entry-only
+                        # exception; website/domestic DNS must stay unchanged.
+                        expected_dns["nameserver-policy"].pop("exit-one.test")
+                    self.assertEqual(protected["dns"], expected_dns)
                     self.assertEqual(
                         {name: node for name, node in nodes.items() if name.startswith("ENDPOINT.MID.")},
                         {node["name"]: node for node in previous["proxies"] if node["name"].startswith("ENDPOINT.MID.")},

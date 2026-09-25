@@ -3,21 +3,22 @@
 {% block title %}登录 · server-kit{% endblock %}
 
 {% block body %}
-<main class="login-shell">
+<main class="login-shell" id="main-content" tabindex="-1">
   {% include "dashboard/_theme_picker.html" with theme_picker_class="login-theme-picker" %}
+  <section class="login-intro" aria-label="server-kit 内网控制台"><a class="brand" href="{% url 'dashboard' %}"><span class="brand-mark small">{% include "dashboard/_icon.html" with icon="terminal" %}</span><strong>server-kit.</strong></a><div><p class="eyebrow">YOUR PRIVATE WORKSPACE</p><h2>你的内网，<br>一处掌控<span>.</span></h2><p>连接设备、分配权限、管理服务。<br>从这里，回到你的工作空间。</p></div><span class="login-intro-foot">PRIVATE NETWORK / CONTROL CONSOLE</span></section>
   <section class="login-card">
-    <div class="brand-mark">SK</div>
-    <p class="eyebrow">内网管理平面</p>
-    <h1>登录 server-kit</h1>
+    <p class="eyebrow">SERVER-KIT CONSOLE</p>
+    <h1>登录控制台</h1>
     <p class="muted">仅允许从已授权的 AWG 或 VLESS 管理员节点访问。</p>
-    {% if form.errors %}<div class="alert danger">用户名或密码不正确。</div>{% endif %}
+    {% if form.errors %}<div class="alert danger" role="alert">用户名或密码不正确，请重新输入。</div>{% endif %}
     <form method="post" class="form-stack">
       {% csrf_token %}
       <label>用户名{{ form.username }}</label>
       <label>密码{{ form.password }}</label>
       {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
-      <button type="submit" class="primary-button">登录</button>
+      <button type="submit" class="primary-button">登录工作空间 <span aria-hidden="true">→</span></button>
     </form>
+    <p class="login-help">请使用管理员分配的账号。无法登录时，请联系管理员。</p>
   </section>
 </main>
 {% endblock %}

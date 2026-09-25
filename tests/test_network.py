@@ -4,14 +4,42 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
+from dataclasses import fields
 from pathlib import Path
+from unittest.mock import patch
 
 from lib.server_kit_network import NetworkPaths, build_overview, clean_permissions
 
 
 class NetworkOverviewTests(unittest.TestCase):
+    def test_topology_context_uses_explicit_paths_without_reading_default_host_files(self) -> None:
+        context = {"hub_address": "10.77.0.1", "vless_networks": {"phone": "10.77.0.0/24"}}
+        with patch("lib.server_kit_network.collect_topology_context", return_value=context) as collect:
+            result = build_overview(self.paths, False)
+        self.assertEqual(result["topology_context"], context)
+        collect.assert_called_once_with(None, None, json.loads(self.paths.vless_active.read_text())["clients"])
+
+    def test_cli_accepts_old_arguments_and_explicit_read_only_fact_paths(self) -> None:
+        root = Path(self.temporary.name)
+        state = root / "awg-state.conf"
+        state.write_text("AWG_SERVER_IP='10.77.0.1'\nAWG_SUBNET_CIDR='10.88.0.0/24'\n")
+        xray = root / "xray.json"
+        xray.write_text("{}")
+        base = [sys.executable, str(Path(__file__).resolve().parents[1] / "lib/server_kit_network.py"),
+                *(str(getattr(self.paths, field.name)) for field in fields(self.paths)[:13]), "0"]
+        before = {path.name: path.read_bytes() for path in root.iterdir() if path.is_file()}
+        for extra, hub in (([], ""), ([str(state), str(xray)], "10.77.0.1")):
+            with self.subTest(extra=extra):
+                result = subprocess.run(base + extra, text=True, capture_output=True, check=True, timeout=10)
+                value = json.loads(result.stdout)
+                self.assertEqual(value["topology_context"], {"hub_address": hub, "vless_networks": {}})
+                self.assertFalse(value["writes_enabled"])
+        self.assertEqual(before, {path.name: path.read_bytes() for path in root.iterdir() if path.is_file()})
+
     def test_port_ranges_are_displayed_compactly_without_changing_stored_ports(self) -> None:
         ports = [22, *range(8000, 8011)]
         permission = clean_permissions([{"target": "vps", "ip": "10.20.0.1", "network": "tcp", "ports": ports}])[0]

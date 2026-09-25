@@ -94,6 +94,68 @@ class TopologyModelTests(unittest.TestCase):
                 self.assertEqual(result["scopes"], ["全部协议 · 全部端口"])
                 self.assertEqual(relation(model, "hub")["forward"]["status"], "unknown")
 
+    def test_verified_vless_all_restores_eight_outgoing_links_and_covers_hub(self):
+        overview = {"topology_context": {"hub_address": "10.77.0.1", "vless_networks": {"phone": "10.77.0.0/24"}},
+                    "nodes": [node("phone", "vless", permissions=[
+                        rule("all", "192.0.2.0/24", "all", []), rule("vps", "10.77.0.1", ports=[22, 9080]),
+                    ]), *[node(f"device-{n}", address=f"10.77.0.{n+10}") for n in range(7)],
+                              node("other-phone", "vless")]}
+        original = copy.deepcopy(overview)
+        model = build_topology(overview, "vless:phone")
+        edges = [edge for edge in model["links"] if edge["source"] == "vless:phone"]
+        self.assertEqual(len(edges), 8)
+        self.assertEqual({edge["target"] for edge in edges}, {"hub", *[f"awg:device-{n}" for n in range(7)]})
+        self.assertTrue(all(edge["status"] == "allowed" and edge["scopes"] == ["全部协议 · 全部端口"] for edge in edges))
+        self.assertFalse(any(edge["target"] == "vless:phone" for edge in model["links"]))
+        self.assertEqual(relation(model, "hub")["node"]["address"], "10.77.0.1")
+        self.assertEqual(model["links"], build_topology(overview, "hub")["links"])
+        self.assertEqual(overview, original)
+
+    def test_verified_network_is_per_client_and_checks_membership_and_state(self):
+        context = {"hub_address": "10.77.0.1", "vless_networks": {"phone": "10.77.0.0/24"}}
+        permissions = [rule("all", "10.88.0.0/24", "tcp", [8000, 8001, 8002])]
+        nodes = [node("phone", "vless", permissions=permissions), node("unverified", "vless", permissions=permissions),
+                 node("inside", address="10.77.0.10"), node("outside", address="10.88.0.10"),
+                 node("disabled", address="10.77.0.11", state="已禁用"),
+                 node("pending", address="10.77.0.12", state="等待首次握手")]
+        model = build_topology({"topology_context": context, "nodes": nodes}, "vless:phone")
+        self.assertEqual(relation(model, "awg:inside")["forward"]["scopes"], ["TCP · 8000-8002"])
+        self.assertEqual(relation(model, "awg:outside")["forward"]["status"], "denied")
+        self.assertEqual(relation(model, "awg:disabled")["forward"]["status"], "inactive")
+        self.assertEqual(relation(model, "awg:pending")["forward"]["status"], "unknown")
+        self.assertFalse(any(edge["source"] == "vless:unverified" for edge in model["links"]))
+
+    def test_hub_address_confirms_saved_ip_not_target_name_and_merges_protocols(self):
+        overview = {"topology_context": {"hub_address": "10.77.0.1", "vless_networks": {}},
+                    "nodes": [node("phone", "vless", permissions=[
+                        rule("vps", "10.77.0.1", ports=[22, 9080]),
+                        rule("vps", "10.77.0.1", "udp", [53, 123]),
+                    ])]}
+        model = build_topology(overview)
+        access = relation(model, "hub")["forward"]
+        self.assertEqual(access["status"], "partial")
+        self.assertEqual(access["scopes"], ["TCP · 22, 9080", "UDP · 53, 123"])
+        overview["topology_context"]["hub_address"] = "10.88.0.1"
+        self.assertEqual(relation(build_topology(overview), "hub")["forward"]["status"], "denied")
+
+    def test_invalid_context_cannot_inject_addresses_networks_or_credentials(self):
+        for context in (None, [], {}, {"hub_address": "secret", "vless_networks": {"phone": "10.20.0.0/24"}},
+                        {"hub_address": "10.20.0.1", "vless_networks": {"phone": "secret"}},
+                        {"hub_address": "10.20.0.1", "vless_networks": {}, "private_key": "secret"}):
+            with self.subTest(context=context):
+                model = build_topology({"topology_context": context, "nodes": [
+                    node("phone", "vless", permissions=[rule("all", "10.20.0.0/24", "all", [])]), node("desk")]})
+                self.assertEqual(relation(model, "hub")["node"]["address"], "")
+                self.assertFalse(any(edge["source"] == "vless:phone" for edge in model["links"]))
+                self.assertNotIn("secret", json.dumps(model))
+
+    def test_awg_all_rule_can_match_known_hub_but_not_another_subnet(self):
+        overview = {"topology_context": {"hub_address": "10.77.0.1", "vless_networks": {}},
+                    "nodes": [node("desk", access_mode="restricted", permissions=[rule("all", "10.77.0.0/24")])]}
+        self.assertEqual(relation(build_topology(overview), "hub")["forward"]["status"], "partial")
+        overview["topology_context"]["hub_address"] = "10.88.0.1"
+        self.assertEqual(relation(build_topology(overview), "hub")["forward"]["status"], "denied")
+
     def test_vless_explicit_rule_can_confirm_scope_alongside_unknown_all(self):
         model = build_topology({"nodes": [node("phone", "vless", permissions=[rule("all", "10.20.0.0/24", "all", []), rule("desk")]), node("desk")]})
         result = relation(model, "awg:desk")["forward"]

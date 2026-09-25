@@ -16,6 +16,11 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from .server_kit_topology_facts import collect_topology_context
+except ImportError:
+    from server_kit_topology_facts import collect_topology_context
+
+try:
     from .server_kit_port_ranges import format_ports
 except ImportError:
     from server_kit_port_ranges import format_ports
@@ -62,6 +67,8 @@ class NetworkPaths:
     node_domains: Path
     clash_inputs: Path
     management: Path
+    awg_state: Path | None = None
+    xray_config: Path | None = None
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -380,6 +387,7 @@ def build_overview(paths: NetworkPaths, writes_enabled: bool) -> dict[str, Any]:
     )
     return {
         "schema_version": 1,
+        "topology_context": collect_topology_context(paths.awg_state, paths.xray_config, clients),
         "writes_enabled": writes_enabled,
         "subscriptions_configured": configured,
         "sync_available": configured and writes_enabled,
@@ -436,10 +444,11 @@ def build_overview(paths: NetworkPaths, writes_enabled: bool) -> dict[str, Any]:
 
 
 def main() -> int:
-    if len(sys.argv) != 15:
+    if len(sys.argv) not in {15, 17}:
         print("节点视图参数数量不正确", file=sys.stderr)
         return 1
-    paths = NetworkPaths(*(Path(value) for value in sys.argv[1:14]))
+    paths = NetworkPaths(*(Path(value) for value in sys.argv[1:14]),
+                         *(Path(value) for value in sys.argv[15:17]))
     result = build_overview(paths, sys.argv[14] == "1")
     json.dump(result, sys.stdout, ensure_ascii=False, separators=(",", ":"))
     sys.stdout.write("\n")

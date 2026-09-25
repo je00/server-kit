@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from lib.server_kit_port_ranges import format_ports
+from lib.server_kit_topology_facts import valid_topology_context
 
 
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
@@ -76,7 +77,7 @@ def _scopes(rules: list[dict]) -> list[str]:
 
 
 def _policy_access(source: dict, target: dict, raw: dict, rules: list[dict], malformed: bool,
-                   awg_by_name: dict[str, dict]) -> dict:
+                   awg_by_name: dict[str, dict], effective_network=None) -> dict:
     if target["kind"] == "vless":
         return _result("not_applicable", "不适用", "VLESS 是访问入口，没有可供其他节点访问的内网目标地址。")
     if source["kind"] == "hub":
@@ -101,7 +102,7 @@ def _policy_access(source: dict, target: dict, raw: dict, rules: list[dict], mal
                 if target["kind"] == "hub":
                     matched.append(rule)
             elif name == "all":
-                if target["kind"] == "hub" or destination_ip is None:
+                if destination_ip is None:
                     uncertain.append(rule)
                 elif destination_ip in rule["ip"]:
                     matched.append(rule)
@@ -119,10 +120,13 @@ def _policy_access(source: dict, target: dict, raw: dict, rules: list[dict], mal
                 if named is None or named["address"] != str(rule["ip"]):
                     warnings.append("有 VLESS 规则的目标名称与当前节点地址不一致；按保存的 IP 判断。")
             if name == "all":
-                # The VLESS renderer substitutes its current AWG network. The
-                # overview only has the saved CIDR, so it cannot prove a match.
-                uncertain.append(rule)
-            elif target["kind"] == "hub" or destination_ip is None:
+                # The saved CIDR can be stale. Only use a per-client network
+                # proved against its rendered allow/guard/fallback rules.
+                if effective_network is None or destination_ip is None:
+                    uncertain.append(rule)
+                elif destination_ip in effective_network:
+                    matched.append(rule)
+            elif destination_ip is None:
                 uncertain.append(rule)
             elif destination_ip == rule["ip"]:
                 matched.append(rule)
@@ -135,8 +139,8 @@ def _policy_access(source: dict, target: dict, raw: dict, rules: list[dict], mal
             warnings.append("另有规则缺少当前地址或网段依据，其他范围尚无法确认。")
         return _result("partial", "部分范围授权", "当前配置允许来源在列出的协议和端口范围内访问目标。", scopes, warnings)
     if uncertain:
-        if target["kind"] != "hub" and source["kind"] == "vless" and any(rule["target"] == "all" for rule in uncertain):
-            return _result("unknown", "网段待核实", "当前 AWG 网段未提供；VLESS 的全部节点规则使用实际网段，不能以保存的网段确认匹配。", _scopes(uncertain), warnings)
+        if source["kind"] == "vless" and effective_network is None and any(rule["target"] == "all" for rule in uncertain):
+            return _result("unknown", "网段待核实", "VLESS 的全部节点规则使用实际网段；渲染配置缺失或与保存权限不一致，不能以保存的网段确认匹配。", _scopes(uncertain), warnings)
         detail = "中心节点的内网地址未提供" if target["kind"] == "hub" else "目标节点的内网地址无效或未提供"
         return _result("unknown", "范围待核实", f"{detail}，无法核实保存的 IP / 网段规则是否匹配。", _scopes(uncertain), warnings)
     if malformed or (target["kind"] != "hub" and not target["address"]):
@@ -145,8 +149,8 @@ def _policy_access(source: dict, target: dict, raw: dict, rules: list[dict], mal
 
 
 def _access(source: dict, target: dict, records: dict[str, tuple], awg_by_name: dict[str, dict]) -> dict:
-    raw, rules, malformed = records.get(source["id"], ({}, [], False))
-    result = _policy_access(source, target, raw, rules, malformed, awg_by_name)
+    raw, rules, malformed, network = records.get(source["id"], ({}, [], False, None))
+    result = _policy_access(source, target, raw, rules, malformed, awg_by_name, network)
     if result["status"] == "not_applicable":
         return result
     states = {source["availability"], target["availability"]}
@@ -180,7 +184,9 @@ def _relationship(forward: dict, reverse: dict) -> tuple[str, str]:
 def build_topology(overview: object, selected_id: str = "") -> dict[str, Any]:
     """Project all confirmed access links and selected details without probing."""
     overview = overview if isinstance(overview, dict) else {}
-    hub = {"id": "hub", "name": "VPS", "kind": "hub", "kind_label": "中心节点", "address": "",
+    context = overview.get("topology_context")
+    context = context if valid_topology_context(context) else {"hub_address": "", "vless_networks": {}}
+    hub = {"id": "hub", "name": "VPS", "kind": "hub", "kind_label": "中心节点", "address": context["hub_address"],
            "state": "服务端", "availability": "hub", "protected": False, "online_label": "未检测"}
     nodes, records, warnings = [hub], {}, []
     raw_nodes = overview.get("nodes", [])
@@ -208,7 +214,8 @@ def build_topology(overview: object, selected_id: str = "") -> dict[str, Any]:
                 "protected": kind == "awg" and raw.get("protected") is True, "online_label": "未检测"}
         nodes.append(node)
         rules, malformed = _rules(raw) if not (kind == "awg" and raw.get("access_mode") == "unrestricted") else ([], False)
-        records[identifier] = (raw, rules, malformed)
+        network = context["vless_networks"].get(name) if kind == "vless" else None
+        records[identifier] = (raw, rules, malformed, ipaddress.ip_network(network) if network else None)
     by_id = {node["id"]: node for node in nodes}
     selected = by_id.get(selected_id) if isinstance(selected_id, str) else None
     selected = selected or next((node for node in nodes[1:] if node["protected"]), None)

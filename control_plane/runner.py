@@ -16,6 +16,7 @@ from typing import Any, Callable
 from control_plane.errors import TaskExecutionError
 from lib.server_kit_audit import append_audit
 from lib.server_kit_permission_batch import normalize_rules
+from lib.server_kit_topology_facts import valid_topology_context
 
 
 CHANGEABLE_SERVICE_IDS = frozenset({"clash", "file", "mosh"})
@@ -362,7 +363,8 @@ class ScriptRunner:
         }
         if (
             not isinstance(payload, dict)
-            or set(payload) != required
+            or set(payload) not in (required, required | {"topology_context"})
+            or ("topology_context" in payload and not valid_topology_context(payload["topology_context"]))
             or payload.get("schema_version") != 1
             or not all(isinstance(payload.get(key), bool) for key in {
                 "writes_enabled", "subscriptions_configured", "sync_available", "pending_vless", "pending_access"

@@ -226,6 +226,25 @@ class ScriptRunnerTests(unittest.TestCase):
 
         self.assertEqual(runner.network_overview(), payload)
 
+        for context in (
+            {"hub_address": "", "vless_networks": {}},
+            {"hub_address": "10.77.0.1", "vless_networks": {"phone": "10.77.0.0/24"}},
+        ):
+            payload["topology_context"] = context
+            executor.return_value = self.completed([], json.dumps(payload))
+            self.assertEqual(runner.network_overview(), payload)
+        for context in (
+            None, [], {}, {"hub_address": "secret", "vless_networks": {}},
+            {"hub_address": "10.77.0.1", "vless_networks": {"phone": "secret"}},
+            {"hub_address": "10.77.0.1", "vless_networks": {"../../secret": "10.77.0.0/24"}},
+            {"hub_address": "10.77.0.1", "vless_networks": {}, "private_key": "secret"},
+        ):
+            with self.subTest(context=context):
+                payload["topology_context"] = context
+                executor.return_value = self.completed([], json.dumps(payload))
+                with self.assertRaisesRegex(RuntimeError, "版本不受支持"):
+                    runner.network_overview()
+
     def test_awg_all_access_uses_fixed_arguments(self) -> None:
         response = {
             "schema_version": 1, "operation": "allow",

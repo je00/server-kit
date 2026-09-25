@@ -35,7 +35,21 @@ function syncExitEditor(form) {
     });
   });
   exitField(form, "exit_proxy_base").disabled = busy || mode !== "fields";
-  form.querySelector('[name="exit_input_mode"][value="fields"]').disabled = busy || !state.fieldsReady;
+  // An unloaded editor is an action, not a disabled dead end. Clicking it
+  // explicitly starts the existing authenticated load, or explains the limit.
+  form.querySelector('[name="exit_input_mode"][value="fields"]').disabled = busy || state.loading;
+  const hint = form.querySelector("[data-exit-fields-hint]");
+  if (hint) hint.textContent = state.loading ? "正在载入…"
+    : state.fieldsReady ? "编辑地址、端口和认证"
+    : exitField(form, "exit_proxy_yaml").value.trim() ? "需可转换的 SOCKS5 配置"
+    : form.dataset.exitProtocol !== "socks5" ? "仅支持 SOCKS5"
+    : form.querySelector('[data-secret-action="edit-exit"]') ? "点击载入现有配置"
+    : "需超级管理员载入";
+}
+
+function exitEditorFeedback(form, message) {
+  form.querySelector("[data-exit-edit-status]").textContent = message;
+  showFeedback(message);
 }
 
 function fillExitFields(form, proxy) {
@@ -76,6 +90,7 @@ function beginExitEditorLoad(button) {
   if (state.dirty && !window.confirm("重新载入会放弃当前连接配置草稿，名称和默认出口选择会保留。继续吗？")) return null;
   state.loading = true;
   state.request = {form, button, label: button.textContent, generation: ++state.generation, snapshot: exitConnectionSnapshot(form)};
+  syncExitEditor(form);
   return state.request;
 }
 
@@ -90,6 +105,7 @@ function finishExitEditorLoad(request) {
   state.request = null;
   request.button.textContent = request.label;
   request.button.disabled = request.form.getAttribute("aria-busy") === "true";
+  syncExitEditor(request.form);
 }
 
 function loadExitEditorConfig(button, payload, request) {
@@ -160,7 +176,7 @@ function initializeExitEditors() {
         state.dirty = true;
         try { state.fieldsReady = Boolean(editableSocksProxy(JSON.parse(event.target.value))); }
         catch (_) { state.fieldsReady = false; }
-        form.querySelector('[name="exit_input_mode"][value="fields"]').disabled = !state.fieldsReady;
+        syncExitEditor(form);
       } else if (exitEditorFieldNames.some(name => event.target.name === "exit_field_" + name)) {
         state.dirty = true;
         exitField(form, "exit_field_password").setCustomValidity("");
@@ -173,14 +189,37 @@ function initializeExitEditors() {
           if (!validateExitFields(form)) throw new Error("请先补全连接参数，再切换完整配置。");
           exitField(form, "exit_proxy_yaml").value = JSON.stringify(exitFieldsAsProxy(form), null, 2) + "\n";
         } else if (next === "fields") {
-          const proxy = JSON.parse(exitField(form, "exit_proxy_yaml").value);
-          if (!editableSocksProxy(proxy)) throw new Error("该配置请使用完整配置编辑，或重新载入后修改。");
+          const raw = exitField(form, "exit_proxy_yaml").value;
+          let proxy;
+          try { proxy = JSON.parse(raw); } catch (_) { /* Keep opaque YAML intact. */ }
+          if (!editableSocksProxy(proxy)) {
+            // Restore before taking the load snapshot. Cancellation or a late
+            // response must never leave an empty fields form selected.
+            form.querySelector(`[name="exit_input_mode"][value="${state.lastMode}"]`).checked = true;
+            syncExitEditor(form);
+            const loader = form.querySelector('[data-secret-action="edit-exit"]');
+            if (!raw.trim() && form.dataset.exitProtocol === "socks5" && loader) {
+              loader.click();
+            } else {
+              exitEditorFeedback(form, raw.trim()
+                ? "当前配置无法安全转换为字段，已保留原文。请继续编辑完整配置；重新载入会替换当前连接草稿。"
+                : form.dataset.exitProtocol !== "socks5"
+                  ? "按字段修改目前仅支持 SOCKS5。此出口请使用完整配置编辑。"
+                  : "仅超级管理员可载入现有凭据。请粘贴完整配置；SOCKS5 JSON 可转为字段编辑。");
+            }
+            return;
+          }
           fillExitFields(form, proxy);
+          state.fieldsReady = true;
         }
         state.lastMode = next;
+        form.querySelector("[data-exit-edit-status]").textContent = next === "fields"
+          ? "已转为字段编辑。未显示的高级参数保持原样；预览确认后才保存。"
+          : "已转为完整配置。请保留仍需使用的高级参数。";
       } catch (error) {
         form.querySelector(`[name="exit_input_mode"][value="${state.lastMode}"]`).checked = true;
-        showFeedback(error instanceof SyntaxError ? "请使用完整配置编辑，或重新载入后修改。" : error.message);
+        exitEditorFeedback(form, error instanceof SyntaxError
+          ? "当前配置无法安全转换，请继续使用完整配置编辑，或重新载入。" : error.message);
       }
       syncExitEditor(form);
     }));

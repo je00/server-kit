@@ -203,6 +203,23 @@ class ExitEditAccessTests(TestCase):
         reveal.assert_not_called()
 
     @patch("dashboard.views.reveal_proxy_resource")
+    @patch("dashboard.views.proxy_resources", return_value=SAFE_RESOURCES)
+    def test_field_entry_is_actionable_without_preloading_credentials(self, resources, reveal):
+        for user in (self.owner, self.admin):
+            self.client.force_login(user)
+            with self.subTest(user=user.username):
+                response = self.client.get(self.url)
+                self.assertContains(response, 'data-exit-edit-form data-exit-protocol="socks5"')
+                self.assertContains(response, 'name="exit_input_mode" value="fields">')
+                self.assertContains(response, 'data-exit-fields-hint')
+                if user.is_superuser:
+                    self.assertContains(response, 'data-secret-action="edit-exit"')
+                else:
+                    self.assertNotContains(response, 'data-secret-action="edit-exit"')
+                    self.assertContains(response, "需超级管理员载入")
+        reveal.assert_not_called()
+
+    @patch("dashboard.views.reveal_proxy_resource")
     @patch("dashboard.views.preview_proxy_change_task", return_value=TASK_PREVIEW)
     def test_rename_with_blank_yaml_keeps_configuration_without_secret_read(self, preview, reveal):
         response = self.client.post(self.url, {

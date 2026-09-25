@@ -22,8 +22,18 @@ const loader = form => form.locator('[data-secret-action="edit-exit"]');
 const auth = page => page.locator("[data-sensitive-auth-modal]");
 const taskModal = page => page.locator("[data-inline-task-modal]");
 const details = form => form.locator("xpath=ancestor::details[1]");
+const fieldsMode = form => form.locator('[name="exit_input_mode"][value="fields"]');
+const fieldsLabel = form => fieldsMode(form).locator("xpath=ancestor::label[1]");
 
-async function session(browser, width = 390) {
+async function selectFields(form, width = 390, allowDisabled = false) {
+  // Tap visible label text so the browser performs native label activation.
+  // Waiting for this target to settle also handles mobile focus/scroll changes.
+  const target = fieldsLabel(form).locator("strong");
+  if (width < 768) await target.tap({force: allowDisabled});
+  else await target.click({force: allowDisabled});
+}
+
+async function session(browser, width = 390, username = "preview") {
   const context = await browser.newContext({viewport: {width, height: width < 768 ? 844 : 1000},
     ...(width < 768 ? {isMobile: true, hasTouch: true} : {})});
   await context.route("**/*", route => {
@@ -42,7 +52,7 @@ async function session(browser, width = 390) {
     else await dialog.accept();
   });
   await page.goto(new URL("login/", base).href);
-  await field(page, "username").fill("preview");
+  await field(page, "username").fill(username);
   await field(page, "password").fill(password);
   await Promise.all([page.waitForURL(base.href), page.locator('button[type="submit"]').click()]);
   assert.equal((await context.request.get(new URL("__preview__/scenario/rich/", base).href)).status(), 200);
@@ -87,6 +97,13 @@ async function loaded(form) {
   }, await field(form, "exit_id").inputValue());
 }
 
+async function fieldsAvailable(form) {
+  await form.page().waitForFunction(id => {
+    const form = [...document.querySelectorAll("[data-exit-edit-form]")].find(form => form.elements.exit_id.value === id);
+    return !form.querySelector('[name="exit_input_mode"][value="fields"]').disabled;
+  }, await field(form, "exit_id").inputValue());
+}
+
 async function noStoredSecrets(page) {
   assert.doesNotMatch(await page.evaluate(() => JSON.stringify({local: {...localStorage}, session: {...sessionStorage}})), /synthetic-preview-exit-secret|Preview-only-2026/);
   assert.doesNotMatch(await taskModal(page).innerHTML(), /synthetic-preview-exit-secret|synthetic-preview-user/);
@@ -99,7 +116,206 @@ async function cleared(form) {
   }
   assert.equal(await field(form, "confirmed").isChecked(), false);
   assert.equal(await field(form, "exit_input_mode").count(), 2);
-  assert.equal(await form.locator('[name="exit_input_mode"][value="fields"]').isDisabled(), true);
+  assert.equal(await fieldsMode(form).isEnabled(), true);
+}
+
+async function directFieldsClick(browser, label, width) {
+  const {context, page, requests, navigations} = await session(browser, width);
+  try {
+    const form = editor(page);
+    await open(form);
+    const defaultValue = await field(form, "exit_default").inputValue();
+    await field(form, "exit_name").fill("fields-click-draft-name");
+    const reads = () => requests.filter(item => item.url === endpoint(firstId)).length;
+    assert.equal(reads(), 0, "opening an editor must not reveal existing credentials");
+    assert.equal(await fieldsMode(form).isEnabled(), true, "blank editor must accept the real fields label click");
+    await selectFields(form, width);
+    await auth(page).waitFor({state: "visible"});
+    assert.equal(await form.locator('[name="exit_input_mode"][value="yaml"]').isChecked(), true);
+    assert.equal(await field(form, "exit_proxy_yaml").inputValue(), "");
+    await screenshot(page, `${label}-${width}-direct-fields-auth`);
+    await field(auth(page), "password").fill("cancelled-fields-password");
+    await auth(page).locator(".qr-close[data-sensitive-auth-close]").click();
+    await fieldsAvailable(form);
+    await cleared(form);
+    assert.equal(await field(auth(page), "password").inputValue(), "");
+    assert.equal(await field(form, "exit_name").inputValue(), "fields-click-draft-name");
+    assert.equal(await field(form, "exit_default").inputValue(), defaultValue);
+    assert.equal(reads(), 1);
+
+    // Retrying the same visible control must re-enter the established password flow.
+    await selectFields(form, width);
+    await auth(page).waitFor({state: "visible"});
+    await field(auth(page), "password").fill("wrong-fields-password");
+    await auth(page).locator('button[type="submit"]').click();
+    await auth(page).locator("[data-sensitive-auth-error]").waitFor({state: "visible"});
+    assert.match(await auth(page).locator("[data-sensitive-auth-error]").innerText(), /密码/);
+    assert.equal(await field(form, "exit_proxy_yaml").inputValue(), "");
+    assert.equal(reads(), 2, "wrong password cannot reveal a configuration");
+    await screenshot(page, `${label}-${width}-direct-fields-wrong-password`);
+    await unlock(page);
+    await loaded(form);
+    await fieldsAvailable(form);
+    assert.equal(await fieldsMode(form).isChecked(), true);
+    assert.equal(await field(form, "exit_name").inputValue(), "fields-click-draft-name");
+    assert.equal(await field(form, "exit_default").inputValue(), defaultValue);
+    assert.equal(await field(form, "exit_field_server").inputValue(), "us-egress.example");
+    assert.equal(await field(form, "exit_field_password").inputValue(), secret);
+    assert.equal(await field(form, "exit_field_password").getAttribute("type"), "password");
+    assert.equal(await field(auth(page), "password").inputValue(), "");
+    assert.equal(reads(), 3);
+    await noStoredSecrets(page);
+    await screenshot(page, `${label}-${width}-direct-fields-loaded`);
+    assert.deepEqual(navigations, []);
+    report.checks.push(`${label} ${width}: physical fields ${width < 768 ? "touch" : "click"} opens password unlock; cancellation/wrong password preserve the draft; retry loads SOCKS5 without navigation`);
+  } finally { await context.close(); }
+}
+
+async function alreadyUnlockedFieldsClick(browser, label) {
+  const {context, page, requests, navigations} = await session(browser);
+  let release;
+  try {
+    const form = editor(page);
+    await open(form);
+    await unlockDirect(context, page);
+    let reached;
+    const pending = new Promise(resolve => { release = resolve; });
+    const intercepted = new Promise(resolve => { reached = resolve; });
+    await page.route(endpoint(firstId), async route => {
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      reached();
+      await pending;
+      await route.fulfill({response});
+    });
+    await selectFields(form);
+    await intercepted;
+    assert.equal(await fieldsMode(form).isDisabled(), true, "loading disables another fields request");
+    assert.equal(await form.locator('[name="exit_input_mode"][value="yaml"]').isChecked(), true);
+    assert.equal(await field(form, "exit_proxy_yaml").inputValue(), "");
+    assert.equal(await auth(page).isVisible(), false);
+    await selectFields(form, 390, true);
+    assert.equal(requests.filter(item => item.url === endpoint(firstId)).length, 1);
+    await screenshot(page, `${label}-390-direct-fields-loading`);
+    release();
+    await loaded(form);
+    await fieldsAvailable(form);
+    assert.equal(await fieldsMode(form).isChecked(), true);
+    assert.equal(await auth(page).isVisible(), false);
+    assert.equal(await field(form, "exit_field_password").inputValue(), secret);
+    assert.equal(requests.filter(item => item.url === endpoint(firstId)).length, 1);
+    await noStoredSecrets(page);
+    assert.deepEqual(navigations, []);
+    report.checks.push(`${label}: already-unlocked fields touch starts one request, shows loading, then enables and selects populated fields`);
+  } finally { release?.(); await context.close(); }
+}
+
+async function keyboardFieldsSelection(browser, label) {
+  const {context, page, requests, navigations} = await session(browser, 1440);
+  try {
+    const form = editor(page);
+    await open(form);
+    const yaml = form.locator('[name="exit_input_mode"][value="yaml"]');
+    await yaml.focus();
+    await page.keyboard.press("ArrowLeft");
+    await auth(page).waitFor({state: "visible"});
+    assert.equal(await yaml.isChecked(), true);
+    await auth(page).locator(".qr-close[data-sensitive-auth-close]").click();
+    await fieldsAvailable(form);
+    await fieldsMode(form).focus();
+    await page.keyboard.press("Space");
+    await auth(page).waitFor({state: "visible"});
+    await unlock(page);
+    await loaded(form);
+    await fieldsAvailable(form);
+    assert.equal(await fieldsMode(form).isChecked(), true);
+    assert.equal(await field(form, "exit_field_server").inputValue(), "us-egress.example");
+    assert.equal(requests.filter(item => item.url === endpoint(firstId)).length, 3);
+    assert.deepEqual(navigations, []);
+    report.checks.push(`${label}: native radio arrow-key and Space selection both enter the password flow and allow a loaded fields editor`);
+  } finally { await context.close(); }
+}
+
+async function preservedFieldsDrafts(browser, label) {
+  const {context, page, requests, navigations, dialogs} = await session(browser);
+  try {
+    const form = editor(page), advanced = editor(page, advancedId);
+    await open(advanced);
+    await selectFields(advanced);
+    assert.equal(await fieldsMode(advanced).isEnabled(), true);
+    assert.equal(await advanced.locator('[name="exit_input_mode"][value="yaml"]').isChecked(), true);
+    assert.equal(await field(advanced, "exit_proxy_yaml").inputValue(), "");
+    const unsupportedStatus = await advanced.locator("[data-exit-edit-status]").innerText();
+    assert.match(unsupportedStatus, /SOCKS5/);
+    assert.match(unsupportedStatus, /完整配置/);
+    assert.equal(await page.locator("[data-interaction-feedback]").innerText(), unsupportedStatus);
+    assert.equal(await auth(page).isVisible(), false);
+    assert.equal(requests.filter(item => item.url === endpoint(advancedId)).length, 0);
+    await screenshot(page, `${label}-390-direct-fields-vless-reason`);
+
+    await open(form);
+    await field(form, "exit_name").fill("manual-fields-draft");
+    for (const [kind, draft] of [
+      ["yaml", "type: socks5\nserver: draft-synthetic.example\nport: 1080\nusername: draft-user\npassword: draft-secret\nudp: false\n"],
+      ["unsupported-json", JSON.stringify({type: "vless", server: "draft-synthetic.example", port: 443, uuid: "synthetic-id", "ws-opts": {path: "/preserve"}})],
+      ["invalid-socks5-json", JSON.stringify({type: "socks5", server: "draft-synthetic.example", port: 1080, username: "unpaired-synthetic-user"})],
+    ]) {
+      await field(form, "exit_proxy_yaml").fill(draft);
+      await selectFields(form);
+      assert.equal(await fieldsMode(form).isEnabled(), true);
+      assert.equal(await form.locator('[name="exit_input_mode"][value="yaml"]').isChecked(), true);
+      assert.equal(await field(form, "exit_proxy_yaml").inputValue(), draft, `${kind}: fields click preserves every draft byte`);
+      assert.equal(await field(form, "exit_name").inputValue(), "manual-fields-draft");
+      assert.equal(await field(form, "exit_proxy_base").inputValue(), "");
+      assert.equal(await field(form, "exit_field_password").inputValue(), "");
+      const status = await form.locator("[data-exit-edit-status]").innerText();
+      assert.match(status, /完整配置/);
+      assert.equal(await page.locator("[data-interaction-feedback]").innerText(), status);
+      assert.equal(await auth(page).isVisible(), false);
+      assert.equal(requests.filter(item => item.url === endpoint(firstId)).length, 0);
+      await screenshot(page, `${label}-390-direct-fields-${kind}-reason`);
+    }
+    const pasted = {type: "socks5", server: "pasted-synthetic.example", port: 2080,
+      username: "pasted-user", password: "pasted-secret", udp: false, tls: true, "skip-cert-verify": false};
+    await field(form, "exit_proxy_yaml").fill(JSON.stringify(pasted, null, 2) + "\n");
+    await selectFields(form);
+    assert.equal(await fieldsMode(form).isChecked(), true);
+    assert.deepEqual(JSON.parse(await field(form, "exit_proxy_base").inputValue()), pasted);
+    assert.match(await form.locator("[data-exit-edit-status]").innerText(), /已转为字段/);
+    assert.doesNotMatch(await form.locator("[data-exit-edit-status]").innerText(), /无法安全转换/);
+    assert.equal(await field(form, "exit_field_password").inputValue(), pasted.password);
+    assert.equal(await auth(page).isVisible(), false);
+    assert.equal(requests.filter(item => item.url === endpoint(firstId)).length, 0);
+    assert.deepEqual(dialogs, [], "fields mode selection must never request draft replacement");
+    assert.deepEqual(navigations, []);
+    report.checks.push(`${label}: initial VLESS and incompatible drafts show inline/toast reasons without requests; valid pasted SOCKS5 enters fields and retains advanced parameters locally`);
+  } finally { await context.close(); }
+}
+
+async function staffFieldsClick(browser, label) {
+  const {context, page, requests, navigations} = await session(browser, 390, "administrator-with-long-name");
+  try {
+    const form = editor(page);
+    await open(form);
+    assert.equal(await loader(form).count(), 0);
+    assert.equal(await fieldsMode(form).isEnabled(), true);
+    await selectFields(form);
+    assert.equal(await form.locator('[name="exit_input_mode"][value="yaml"]').isChecked(), true);
+    const status = await form.locator("[data-exit-edit-status]").innerText();
+    assert.match(status, /超级管理员/);
+    assert.equal(await page.locator("[data-interaction-feedback]").innerText(), status);
+    assert.equal(await auth(page).isVisible(), false);
+    assert.equal(requests.filter(item => item.url === endpoint(firstId)).length, 0);
+    const pasted = {type: "socks5", server: "staff-draft.example", port: 1080, udp: false};
+    await field(form, "exit_proxy_yaml").fill(JSON.stringify(pasted));
+    await selectFields(form);
+    assert.equal(await fieldsMode(form).isChecked(), true);
+    assert.deepEqual(JSON.parse(await field(form, "exit_proxy_base").inputValue()), pasted);
+    assert.equal(requests.filter(item => item.url === endpoint(firstId)).length, 0);
+    assert.deepEqual(navigations, []);
+    await screenshot(page, `${label}-390-staff-pasted-fields`);
+    report.checks.push(`${label}: staff receives a visible explanation without a reveal request and can edit pasted SOCKS5 fields`);
+  } finally { await context.close(); }
 }
 
 async function complete(page, form) {
@@ -107,6 +323,7 @@ async function complete(page, form) {
   await field(form, "confirmed").check();
   await form.locator('button[type="submit"]').click();
   await taskModal(page).locator("[data-inline-confirm]").waitFor({state: "visible"});
+  assert.equal(await fieldsMode(form).isDisabled(), true, "previewed form keeps mode selection locked until released");
   await noStoredSecrets(page);
   await taskModal(page).locator("[data-inline-confirm]").click();
   await taskModal(page).locator("[data-inline-done]").waitFor({state: "visible"});
@@ -235,7 +452,7 @@ async function modesAndCancel(browser, label) {
 
     await form.locator('[name="exit_input_mode"][value="yaml"]').check();
     await field(form, "exit_proxy_yaml").fill("type: socks5\nserver: manual-draft.example\nport: 1080\npassword: manual-synthetic-secret\nudp: false\n");
-    assert.equal(await form.locator('[name="exit_input_mode"][value="fields"]').isDisabled(), true);
+    assert.equal(await fieldsMode(form).isEnabled(), true);
     await field(form, "password").fill(password);
     await field(form, "confirmed").check();
     await form.locator("[data-exit-edit-cancel]").click();
@@ -254,7 +471,7 @@ async function modesAndCancel(browser, label) {
     assert.match(await field(advanced, "exit_proxy_yaml").inputValue(), /type: "?vless/);
     assert.match(await field(advanced, "exit_proxy_yaml").inputValue(), /ws-opts:/);
     assert.equal(await advanced.locator('[name="exit_input_mode"][value="yaml"]').isChecked(), true);
-    assert.equal(await advanced.locator('[name="exit_input_mode"][value="fields"]').isDisabled(), true);
+    assert.equal(await fieldsMode(advanced).isEnabled(), true);
     assert.equal(await field(advanced, "exit_name").inputValue(), "dedicated-eu-failover");
     assert.equal(await field(advanced, "exit_default").isChecked(), true);
     await noStoredSecrets(page);
@@ -262,7 +479,7 @@ async function modesAndCancel(browser, label) {
     await advanced.locator("[data-exit-edit-cancel]").click();
     await cleared(advanced);
     assert.deepEqual(navigations, []);
-    report.checks.push(`${label}: repeated-load confirmation keeps dirty edits on decline; manual YAML disables fields; cancel resets and clears credentials; advanced VLESS remains complete YAML`);
+    report.checks.push(`${label}: repeated-load confirmation keeps dirty edits on decline; manual YAML keeps the mode control actionable; cancel resets and clears credentials; advanced VLESS remains complete YAML`);
   } finally { await context.close(); }
 }
 
@@ -360,9 +577,13 @@ async function multilineCredentials(browser, label) {
     await loaded(form);
     assert.equal(await field(form, "exit_proxy_yaml").inputValue(), value);
     assert.equal(await form.locator('[name="exit_input_mode"][value="yaml"]').isChecked(), true);
-    assert.equal(await form.locator('[name="exit_input_mode"][value="fields"]').isDisabled(), true);
+    assert.equal(await fieldsMode(form).isEnabled(), true);
     assert.equal(await field(form, "exit_proxy_base").inputValue(), "");
     assert.equal(await field(form, "exit_field_password").inputValue(), "");
+    await selectFields(form);
+    assert.equal(await field(form, "exit_proxy_yaml").inputValue(), value, "unsupported multiline credentials remain lossless after a fields touch");
+    assert.equal(await form.locator('[name="exit_input_mode"][value="yaml"]').isChecked(), true);
+    assert.match(await form.locator("[data-exit-edit-status]").innerText(), /完整配置/);
     assert.deepEqual(navigations, []);
     report.checks.push(`${label}: SOCKS5 credentials containing CR/LF stay intact in full configuration mode`);
   } finally { await context.close(); }
@@ -503,6 +724,16 @@ async function retainedCardAndPageHide(browser, label) {
     for (const [label, engine] of [["chromium", chromium], ["webkit", webkit]]) {
       const browser = await engine.launch({headless: true});
       try {
+        if (!process.argv.includes("--races-only")) {
+          for (const width of [320, 390, 1440]) await directFieldsClick(browser, label, width);
+          await alreadyUnlockedFieldsClick(browser, label);
+          await keyboardFieldsSelection(browser, label);
+          await preservedFieldsDrafts(browser, label);
+          await staffFieldsClick(browser, label);
+        }
+        if (process.argv.includes("--fields-click-only")) {
+          continue;
+        }
         if (!process.argv.includes("--races-only")) {
           for (const width of [320, 390, 1440]) await editLifecycle(browser, label, width);
           await modesAndCancel(browser, label);

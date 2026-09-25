@@ -1,4 +1,4 @@
-<form class="proxy-resource-form" method="post" data-exit-edit-form autocomplete="off">
+<form class="proxy-resource-form" method="post" data-exit-edit-form data-exit-protocol="{{ exit.type }}" autocomplete="off">
   {% csrf_token %}
   <input type="hidden" name="operation" value="exit_update">
   <input type="hidden" name="exit_id" value="{{ exit.id }}">
@@ -6,13 +6,13 @@
   <label>出口名称<input name="exit_name" value="{{ exit.name }}" maxlength="40" required><small>名称需包含英文或数字，用于 EXIT 与 VLESS 中转名称。</small></label>
   <div class="exit-edit-tools">
     {% if request.user.is_superuser %}<button class="secondary-button" type="button" data-secret-action="edit-exit" data-secret-label="载入出口配置以编辑" data-endpoint="{% url 'network-proxy-secret' exit.id 'exit' %}">载入现有配置</button>{% endif %}
-    <p class="field-hint">只改名称可直接保存。{% if request.user.is_superuser %}修改连接参数，先载入现有配置。{% else %}修改连接参数，请粘贴完整配置；仅超级管理员可读取现有凭据。{% endif %}</p>
+    <p class="field-hint">只改名称可直接保存。{% if request.user.is_superuser %}SOCKS5 可直接点“按字段修改”，按提示载入。{% else %}修改连接参数，请粘贴完整配置；仅超级管理员可读取现有凭据。{% endif %}</p>
   </div>
   <p class="field-hint exit-edit-status" data-exit-edit-status role="status" aria-live="polite">未载入凭据；连接配置留空表示保持不变。</p>
   <fieldset class="exit-input-mode">
     <legend>连接配置</legend>
     <div>
-      <label><input type="radio" name="exit_input_mode" value="fields" disabled><span><strong>按字段修改</strong><small>载入 SOCKS5 后可用</small></span></label>
+      <label><input type="radio" name="exit_input_mode" value="fields"><span><strong>按字段修改</strong><small data-exit-fields-hint>{% if exit.type != 'socks5' %}仅支持 SOCKS5{% elif request.user.is_superuser %}点击载入现有配置{% else %}需超级管理员载入{% endif %}</small></span></label>
       <label><input type="radio" name="exit_input_mode" value="yaml" checked><span><strong>完整配置</strong><small>YAML / JSON，支持其他协议</small></span></label>
     </div>
   </fieldset>

@@ -58,14 +58,14 @@ Open a **new terminal on your own computer**. Replace `SSH_PORT` and `YOUR_VPS_I
 ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:9080:10.20.0.1:9080 -p SSH_PORT root@YOUR_VPS_IP
 ```
 
-No terminal output is normal. Leave it running, open **http://127.0.0.1:9080**, and sign in. If setup printed a different private address or port, use those values.
+No terminal output is normal. Leave it running, open [http://127.0.0.1:9080](http://127.0.0.1:9080), and sign in. If setup printed a different private address or port, use those values.
 
 ### 4. Connect your first device
 
 1. Have an **AmneziaWG-compatible** client ready on your device. Open **内网节点 → 新增节点** (Network nodes → Add node) and create a regular AWG node.
 2. Save or scan the browser-generated configuration before registration. Save both main and backup profiles, but turn on only one. The VPS does not keep your client private key and cannot recover it.
 3. **Preview and confirm registration, then connect within 5 minutes** to complete the first handshake. If it times out, the node is removed and must be registered again.
-4. Wait for **已启用** (Enabled), then select **设为管理入口** (Set as management entry). Check that **http://10.20.0.1:9080** opens directly over AWG before closing the SSH tunnel.
+4. Wait for **已启用** (Enabled), then select **设为管理入口** (Set as management entry). Check that [http://10.20.0.1:9080](http://10.20.0.1:9080) opens directly over AWG before closing the SSH tunnel.
 
 Your basic private network is ready. Use **部署向导** (Setup guide) for more devices. Each device's own firewall must also allow the services you want to reach.
 

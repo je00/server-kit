@@ -6,14 +6,21 @@ from typing import Any
 
 from django.conf import settings
 
-from control_plane.client import AgentClient
+from control_plane.client import AgentClient, AgentError
 
 
 def read_host(intent: str, service_id: str = "") -> dict[str, Any]:
     """按页面意图读取完整视图，页面无需了解底层事实组合。"""
-    result = AgentClient(settings.SERVER_KIT_AGENT_SOCKET).request(
-        "host.read", {"intent": intent, "service_id": service_id}
-    )
+    # A cold page collector may use the runner's full 15-second budget.
+    # Only extend these read-only requests, not unrelated management actions.
+    try:
+        result = AgentClient(settings.SERVER_KIT_AGENT_SOCKET, timeout=20.0).request(
+            "host.read", {"intent": intent, "service_id": service_id}
+        )
+    except OSError as error:
+        # Deep-link landings use the same safe unavailable-state UI as home.
+        # Do not expose socket details or automatically repeat any request.
+        raise AgentError("暂时无法读取主机状态，请稍后重试。", "agent_unavailable") from error
     view = result.get("view")
     if not isinstance(view, dict):
         raise RuntimeError("管理代理返回了无效主机视图")

@@ -112,5 +112,5 @@ class ManagedHostReadModel:
         value = loader()
         if not isinstance(value, dict) or value.get("schema_version") not in expected_schema_versions:
             raise RuntimeError(f"主机事实版本不受支持：{kind}")
-        self._cache[key] = _CachedFact(value=value, expires_at=now + self._ttl)
+        self._cache[key] = _CachedFact(value=value, expires_at=self._clock() + self._ttl)
         return value

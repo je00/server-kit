@@ -80,6 +80,28 @@ class ManagedHostReadModelTests(unittest.TestCase):
         result = model.read("proxy")
         self.assertEqual(result["view"]["schema_version"], 3)
 
+    def test_slow_collection_gets_full_ttl_after_completion_then_refreshes(self) -> None:
+        adapter = FactAdapter()
+        clock = [10.0]
+
+        def slow_snapshot():
+            clock[0] += 2.0
+            return adapter._value("snapshot", services=[])
+
+        adapter.snapshot = slow_snapshot
+        model = ManagedHostReadModel(adapter, describe, ttl_seconds=1.0, clock=lambda: clock[0])
+        model.read("overview")
+        model.read("overview")
+        self.assertEqual(adapter.calls, ["snapshot"])
+        clock[0] += 0.9
+        model.read("overview")
+        self.assertEqual(adapter.calls, ["snapshot"])
+        clock[0] += 0.2
+        model.read("overview")
+        self.assertEqual(adapter.calls, ["snapshot", "snapshot"])
+        model.read("overview")
+        self.assertEqual(adapter.calls, ["snapshot", "snapshot"])
+
 
 if __name__ == "__main__":
     unittest.main()

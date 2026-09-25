@@ -26,6 +26,8 @@ from control_plane.task_crypto import TaskPayloadCipher  # noqa: E402
 
 
 MAX_REQUEST_BYTES = 65_536
+CONNECTION_IO_TIMEOUT_SECONDS = 5.0
+LOGGER = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
@@ -107,16 +109,24 @@ def serve(listener: socket.socket, plane: ControlPlane) -> None:
         connection, _address = listener.accept()
         with connection:
             try:
-                request = receive_request(connection)
-                response = plane.handle(request, peer_uid(connection))
-            except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
-                response = {
-                    "version": 1,
-                    "request_id": "invalid-request",
-                    "ok": False,
-                    "error": {"code": "invalid_request", "message": "请求不是有效的单行 JSON。"},
-                }
-            send_response(connection, response)
+                # Bound client I/O, not action execution. A slow or departed
+                # browser must not block or stop the shared management agent.
+                connection.settimeout(CONNECTION_IO_TIMEOUT_SECONDS)
+                try:
+                    request = receive_request(connection)
+                    response = plane.handle(request, peer_uid(connection))
+                except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+                    response = {
+                        "version": 1,
+                        "request_id": "invalid-request",
+                        "ok": False,
+                        "error": {"code": "invalid_request", "message": "请求不是有效的单行 JSON。"},
+                    }
+                send_response(connection, response)
+            except OSError as error:
+                # The action may already have completed: never replay it or
+                # attempt another response on the failed connection.
+                LOGGER.warning("管理代理客户端连接已结束：%s", type(error).__name__)
 
 
 def main() -> int:

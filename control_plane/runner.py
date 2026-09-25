@@ -230,7 +230,14 @@ class ScriptRunner:
         expected_keys = {"schema_version", "resource", "item_id", "name", value_key}
         valid = (
             isinstance(payload, dict)
-            and set(payload) == expected_keys
+            and (
+                set(payload) == expected_keys
+                or (
+                    resource == "exit_config"
+                    and set(payload) == expected_keys | {"proxy"}
+                    and isinstance(payload["proxy"], dict)
+                )
+            )
             and payload.get("schema_version") == 1
             and payload.get("resource") == response_resource
             and payload.get("item_id") == item_id

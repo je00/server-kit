@@ -482,6 +482,11 @@ h2 { margin-bottom: 0; font-size: 1.25rem; }
 .exit-input-mode small { color: var(--muted); font-size: .68rem; font-weight: 400; }
 .exit-input-panel { display: grid; gap: .8rem; min-width: 0; padding: .9rem; border: 1px solid var(--line); border-radius: .8rem; background: var(--surface-subtle); }
 .exit-input-panel[hidden] { display: none; }
+.exit-edit-summary { display: inline-block; margin-inline-start: .5rem; color: var(--muted); font-size: .72rem; font-weight: 400; }
+.exit-edit-tools, .exit-edit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem; min-width: 0; }
+.exit-edit-tools .field-hint { flex: 1 1 12rem; margin: 0; }
+.exit-edit-tools > button, .exit-edit-actions > button { min-height: 44px; }
+.exit-edit-status { margin: 0; overflow-wrap: anywhere; }
 .exit-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
 .exit-field-grid label, .exit-yaml-panel > label { display: grid; gap: .4rem; color: var(--muted); font-size: .8rem; font-weight: 700; }
 .exit-field-grid label:nth-child(2) { grid-column: span 1; }

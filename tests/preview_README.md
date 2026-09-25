@@ -29,6 +29,7 @@ development environment, not on the VPS):
 node tests/run_web_visual_audit.cjs http://127.0.0.1:8765/
 node tests/run_mobile_render_ui.cjs http://127.0.0.1:8765/
 node tests/run_login_ui.cjs http://127.0.0.1:8765/
+node tests/run_exit_edit_ui.cjs http://127.0.0.1:8765/
 ```
 
 It signs in with the demo account, captures all 40 routes at 320, 390, 768 and
@@ -45,6 +46,14 @@ The login regression uses Chromium and WebKit: normal and deep-link login,
 duplicate submits, stale tabs after CSRF rotation, and safe GET-only recovery.
 Anonymous, cross-origin and non-login invalid forms must still return 403.
 It records synthetic screenshots and cookie-change booleans, never cookie values.
+
+The exit-editor regression uses Chromium and WebKit at 320, 390 and 1440 pixels.
+It checks rename-only saves, on-demand authentication, lossless SOCKS5 editing,
+advanced YAML, draft cancellation, late-response races, credential clearing and
+same-page task completion. Use a dedicated preview port: each case resets the
+synthetic scenario. Revealed configurations and credentials are synthetic; the
+fake agent never retains submitted proxy credentials. Add `--races-only` to
+repeat the concurrency, lossless-input, retained-card and pagehide cases alone.
 
 The default rich scenario renders 40 review routes. Use the index to reset or
 switch scenarios; this resets every tab attached to that instance, so use a

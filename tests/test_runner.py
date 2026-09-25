@@ -629,6 +629,82 @@ class ScriptRunnerTests(unittest.TestCase):
         self.assertIn("reveal_proxy_exit_config", audit)
         self.assertNotIn("private-password", audit)
 
+    def test_exit_reveal_accepts_structured_proxy_with_unchanged_yaml_value(self) -> None:
+        response = {
+            "schema_version": 1, "resource": "proxy_exit_config",
+            "item_id": "333333333333", "name": "Exit",
+            "value": "type: socks5\npassword: private-password\n",
+            "proxy": {
+                "name": "EXIT.Exit", "type": "socks5", "server": "exit.test",
+                "port": 1080, "password": "private-password", "dialer-proxy": "MID",
+                "tls": True, "ws-opts": {"headers": {"Authorization": "private-token"}},
+                "alpn": ["h2", "http/1.1"],
+            },
+        }
+        executor = Mock(return_value=self.completed([], json.dumps(response)))
+        runner = ScriptRunner(
+            self.manager_path, audit_path=str(self.audit_path), executor=executor,
+        )
+        self.assertEqual(
+            runner.reveal_resource("clash", "exit_config", "333333333333", "owner"),
+            response,
+        )
+        self.assertEqual(executor.call_args.args[0], [
+            self.manager_path, "reveal", "clash", "exit-config", "333333333333", "--json",
+        ])
+        audit = self.audit_path.read_text(encoding="utf-8")
+        for secret in ("private-password", "private-token", "ws-opts"):
+            self.assertNotIn(secret, audit)
+
+    def test_reveal_rejects_malformed_proxy_or_extra_response_fields(self) -> None:
+        response = {
+            "schema_version": 1, "resource": "proxy_exit_config",
+            "item_id": "333333333333", "name": "Exit",
+            "value": "password: private-password\n",
+        }
+        invalid_responses = [
+            {**response, "proxy": proxy} for proxy in (None, [], "private-password", 42, True)
+        ] + [
+            {**response, "unexpected": "private-password"},
+            {**response, "proxy": {}, "unexpected": "private-password"},
+            {**response, "proxy": {}, "value": {}},
+            {**response, "proxy": {}, "schema_version": 2},
+            {**response, "proxy": {}, "item_id": "444444444444"},
+        ]
+        for payload in invalid_responses:
+            with self.subTest(payload=payload):
+                executor = Mock(return_value=self.completed([], json.dumps(payload)))
+                runner = ScriptRunner(
+                    self.manager_path, audit_path=str(self.audit_path), executor=executor,
+                )
+                with self.assertRaisesRegex(RuntimeError, "响应版本"):
+                    runner.reveal_resource("clash", "exit_config", "333333333333", "owner")
+        audit = self.audit_path.read_text(encoding="utf-8")
+        self.assertNotIn("private-password", audit)
+        self.assertTrue(all(json.loads(line)["outcome"] == "failed" for line in audit.splitlines()))
+
+    def test_structured_proxy_is_not_accepted_for_other_sensitive_resources(self) -> None:
+        for resource, response_resource in (
+            ("airport_link", "proxy_airport_link"),
+            ("subscription_link", "clash_subscription_link"),
+        ):
+            with self.subTest(resource=resource):
+                response = {
+                    "schema_version": 1, "resource": response_resource,
+                    "item_id": "333333333333", "name": "Example",
+                    "value": "https://example.test/private-token",
+                    "proxy": {"password": "private-password"},
+                }
+                runner = ScriptRunner(
+                    self.manager_path, audit_path=str(self.audit_path),
+                    executor=Mock(return_value=self.completed([], json.dumps(response))),
+                )
+                with self.assertRaisesRegex(RuntimeError, "响应版本"):
+                    runner.reveal_resource("clash", resource, "333333333333", "owner")
+        audit = self.audit_path.read_text(encoding="utf-8")
+        self.assertNotIn("private-password", audit)
+        self.assertNotIn("private-token", audit)
+
     def test_failed_command_is_audited_without_exposing_output(self) -> None:
         executor = Mock(
             return_value=subprocess.CompletedProcess(

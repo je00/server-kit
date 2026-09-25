@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from ruamel.yaml import YAML
+
 from lib.server_kit_proxy_resources import (
     ProxyResourceError,
     normalized_config,
@@ -90,8 +92,79 @@ class ProxyResourceTests(unittest.TestCase):
             self.assertEqual(exit_config["resource"], "proxy_exit_config")
             self.assertIn("password: secret", exit_config["value"])
             self.assertIn("dialer-proxy: MID", exit_config["value"])
+            self.assertEqual(
+                exit_config["proxy"], normalized_config(path)["exits"][0]["proxy"]
+            )
+            self.assertEqual(YAML(typ="safe").load(exit_config["value"]), exit_config["proxy"])
+            self.assertNotIn("proxy", link)
             with self.assertRaisesRegex(ProxyResourceError, "不存在"):
                 reveal(path, "airport-link", "ffffffffffff")
+
+    def test_blank_exit_update_preserves_connection_and_selection_facts(self) -> None:
+        advanced_yaml = EXIT_YAML + (
+            "tls: true\n"
+            "sni: tls.example.test\n"
+            "skip-cert-verify: false\n"
+            "udp: true\n"
+            "ws-opts:\n"
+            "  path: /private-route\n"
+            "  headers:\n"
+            "    Authorization: hidden-header-token\n"
+            "alpn: [h2, http/1.1]\n"
+        )
+        for blank_yaml in ("", " \t\n"):
+            with self.subTest(blank_yaml=blank_yaml), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "clash-inputs.json"
+                initial = update(path, {
+                    "airport_url": "https://airport.test/sub?token=private",
+                    "exit_proxy_yaml": advanced_yaml,
+                })
+                first_id = initial["default_exit_id"]
+                added = update(path, {
+                    "operation": "exit_add", "exit_id": "", "exit_name": "Backup",
+                    "exit_default": False, "exit_proxy_yaml": advanced_yaml,
+                })
+                second_id = next(item["id"] for item in added["exits"] if item["id"] != first_id)
+                update(path, {
+                    "operation": "node_exits_set", "awg_name": "home-phone",
+                    "exit_ids": [first_id, second_id],
+                })
+                update(path, {
+                    "operation": "node_exits_set", "awg_name": "direct-phone",
+                    "exit_ids": [],
+                })
+                expected = normalized_config(path)
+                for index, exit_id in enumerate((first_id, second_id)):
+                    name = f"Renamed Exit {index}"
+                    expected["exits"][index]["name"] = name
+                    expected["exits"][index]["proxy"]["name"] = f"EXIT.Renamed.Exit.{index}"
+                    result = update(path, {
+                        "operation": "exit_update", "exit_id": exit_id,
+                        "exit_name": name, "exit_default": False,
+                        "exit_proxy_yaml": blank_yaml,
+                    })
+                    self.assertEqual(normalized_config(path), expected)
+                    self.assertEqual(result["default_exit_id"], first_id)
+                    revealed = reveal(path, "exit-config", exit_id)
+                    self.assertEqual(revealed["proxy"], expected["exits"][index]["proxy"])
+                    self.assertEqual(YAML(typ="safe").load(revealed["value"]), revealed["proxy"])
+                    safe_output = json.dumps(result, ensure_ascii=False)
+                    for secret in ("password", "username", "hidden-header-token", "private-route"):
+                        self.assertNotIn(secret, safe_output)
+                    self.assertTrue(all("proxy" not in item for item in result["exits"]))
+
+    def test_exit_add_rejects_blank_or_incomplete_connection_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "clash-inputs.json"
+            self.bootstrap(path)
+            original = path.read_bytes()
+            for invalid_yaml in ("", " \t\n", "type: socks5\nserver: exit.test\n"):
+                with self.subTest(invalid_yaml=invalid_yaml), self.assertRaises(ProxyResourceError):
+                    update(path, {
+                        "operation": "exit_add", "exit_id": "", "exit_name": "Backup",
+                        "exit_default": False, "exit_proxy_yaml": invalid_yaml,
+                    })
+                self.assertEqual(path.read_bytes(), original)
 
     def test_multiple_exits_default_selection_and_deletion(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

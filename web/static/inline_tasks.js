@@ -60,6 +60,7 @@
       flow.disabled = null;
     }
     flow.form.setAttribute("aria-busy", String(locked));
+    if (!locked) document.dispatchEvent(new CustomEvent("server-kit:form-unlocked", {detail: {form: flow.form}}));
   }
 
   function render(flow) {
@@ -220,7 +221,8 @@
       flow.task = checkTask(data.task, flow.task.id);
       flow.error = "";
       if (flow.task.state === "succeeded") {
-        flow.form.querySelectorAll('input[type="password"],textarea[name="exit_proxy_yaml"],input[name="exit_field_username"]').forEach(input => { input.value = ""; });
+        flow.form.querySelectorAll('input[type="password"],textarea[name="exit_proxy_yaml"],input[name="exit_field_username"],input[name="exit_proxy_base"]').forEach(input => { input.value = ""; });
+        document.dispatchEvent(new CustomEvent("server-kit:exit-edit-saved", {detail: {form: flow.form}}));
         await refresh(flow);
       } else if (flow.task.state === "waiting_confirmation") {
         flow.phase = "review"; flow.message = "尚未提交。可核对后确认同一个任务，不会重复执行。";
@@ -244,6 +246,9 @@
   document.addEventListener("change", event => {
     const form = event.target.closest("form");
     if (form && config(form)) drafts.add(form);
+  });
+  document.addEventListener("server-kit:form-discarded", event => {
+    if (event.detail?.form && !flows.has(event.detail.form)) drafts.delete(event.detail.form);
   });
   document.addEventListener("submit", async event => {
     const form = event.target;

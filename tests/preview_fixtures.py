@@ -48,7 +48,7 @@ def build_fixtures(scenario: str = "rich") -> dict:
                               "memory": {"total_bytes": 4 * 1024**3, "used_bytes": 1879048192, "usage_percent": 43.75},
                               "disk": {"total_bytes": 80 * 1024**3, "used_bytes": 23 * 1024**3, "usage_percent": 28.75}, "uptime_seconds": 3841532}}
     exits = [{"id": "333333333333", "name": "dedicated-us-primary", "default": True, "type": "socks5", "server": "us-egress.example", "port": 1080},
-             {"id": "444444444444", "name": "dedicated-eu-failover", "default": False, "type": "socks5", "server": "eu-backup-egress-with-a-long-name.example", "port": 1080}]
+             {"id": "444444444444", "name": "dedicated-eu-failover", "default": False, "type": "vless", "server": "eu-backup-egress-with-a-long-name.example", "port": 443}]
     names = ["home-desktop", LONG_NAME, "nas-storage-primary", "iphone-travel", "retired-laptop"]
     nodes = []
     for index, name in enumerate(names):

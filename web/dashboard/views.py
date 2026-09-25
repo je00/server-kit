@@ -671,6 +671,34 @@ def _exit_proxy_yaml_from_post(post, operation: str) -> str:
     if post.get("exit_field_type", "") != "socks5":
         raise ValueError("按字段输入当前只支持 SOCKS5 出口。")
 
+    base = None
+    if operation == "exit_update":
+        # This is untrusted replacement input, not an authoritative snapshot.
+        # The root task preview still validates the entire resulting proxy.
+        raw_base = post.get("exit_proxy_base", "")
+        if not raw_base:
+            raise ValueError("请先读取当前出口配置，再按字段编辑。")
+        if len(raw_base) > 65536 or "\x00" in raw_base:
+            raise ValueError("出口配置过长或包含无效字符，请重新读取后编辑。")
+        try:
+            base = json.loads(raw_base)
+            if not isinstance(base, dict) or base.get("type") != "socks5":
+                raise ValueError
+            # Reject non-JSON numeric constants, including overflowing floats.
+            json.dumps(base, allow_nan=False)
+            pending = [base]
+            while pending:
+                value = pending.pop()
+                if isinstance(value, str) and "\x00" in value:
+                    raise ValueError
+                if isinstance(value, dict):
+                    pending.extend(value.keys())
+                    pending.extend(value.values())
+                elif isinstance(value, list):
+                    pending.extend(value)
+        except (ValueError, TypeError, RecursionError):
+            raise ValueError("当前出口配置无效，请重新读取后编辑。") from None
+
     server = post.get("exit_field_server", "").strip()
     port_text = post.get("exit_field_port", "").strip()
     username = post.get("exit_field_username", "")
@@ -692,6 +720,20 @@ def _exit_proxy_yaml_from_post(post, operation: str) -> str:
         raise ValueError("SOCKS5 账号或密码过长或包含无效字符。")
     if bool(username) != bool(password):
         raise ValueError("SOCKS5 账号和密码必须同时填写或同时留空。")
+
+    if base is not None:
+        base.update({"type": "socks5", "server": server, "port": port})
+        if username:
+            base.update({"username": username, "password": password})
+        else:
+            base.pop("username", None)
+            base.pop("password", None)
+        # JSON is valid YAML 1.2 and preserves nested options without a YAML
+        # round trip or inventing defaults for previously absent properties.
+        replacement = json.dumps(base, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        if len(replacement) > 65536:
+            raise ValueError("出口配置过长，未保存任何内容。")
+        return replacement
 
     values: list[tuple[str, object]] = [
         ("type", "socks5"), ("server", server), ("port", port),

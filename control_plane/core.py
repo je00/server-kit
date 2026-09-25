@@ -2419,7 +2419,12 @@ class ControlPlane:
             if operation == "exit_add" and exit_id != "":
                 raise TaskEngineError("invalid_params", "新增出口节点不能指定标识。")
             if operation in {"exit_add", "exit_update"}:
-                if not isinstance(exit_name, str) or not 1 <= len(exit_name.strip()) <= 40 or not exit_proxy_yaml.strip() or not isinstance(exit_default, bool):
+                if (
+                    not isinstance(exit_name, str)
+                    or not 1 <= len(exit_name.strip()) <= 40
+                    or (operation == "exit_add" and not exit_proxy_yaml.strip())
+                    or not isinstance(exit_default, bool)
+                ):
                     raise TaskEngineError("invalid_params", "出口名称或节点内容无效。")
             elif exit_name != "" or exit_proxy_yaml != "" or exit_default is not False:
                 raise TaskEngineError("invalid_params", "该出口动作包含无关字段。")

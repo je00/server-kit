@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% load static %}
-{% block extra_head %}<script src="{% static 'inline_tasks.js' %}" defer></script>{% endblock %}
+{% block extra_head %}<script src="{% static 'inline_tasks.js' %}" defer></script><script src="{% static 'exit_editor.js' %}" defer></script>{% endblock %}
 
 {% block title %}代理资源 · server-kit{% endblock %}
 
@@ -33,7 +33,7 @@
 
     {% if request.user.is_superuser and not sensitive_unlocked %}
     <section class="sensitive-unlock">
-      <div><strong>机场链接与出口凭据按需解锁</strong><p>点击查看或复制时验证密码，5 分钟内无需重复验证；不会刷新页面或丢失编辑内容。</p></div>
+      <div><strong>机场链接与出口凭据按需解锁</strong><p>查看、复制或载入配置时验证密码，5 分钟内无需重复验证；不会刷新页面或丢失编辑内容。</p></div>
     </section>
     {% endif %}
 
@@ -100,8 +100,8 @@
         {% for exit in proxy.exits %}
         <article class="airport-card" data-filter-item data-inline-key="exit:{{ exit.id }}" data-filter-label="{{ exit.name }} {{ exit.type }} {{ exit.server }} {{ exit.port }}">
           <div class="airport-card-head"><div class="airport-identity"><div class="airport-title"><strong>{{ exit.name }}</strong>{% if exit.default %}<span class="item-state">默认</span>{% endif %}</div><p>{{ exit.type }} · {{ exit.server }}:{{ exit.port }}</p></div>{% if request.user.is_superuser %}<form class="inline-secret-actions">{% csrf_token %}<button class="copy-button" type="button" data-secret-action="view" data-endpoint="{% url 'network-proxy-secret' exit.id 'exit' %}">查看配置</button><button class="copy-button" type="button" data-secret-action="copy" data-endpoint="{% url 'network-proxy-secret' exit.id 'exit' %}">复制配置</button></form>{% endif %}</div>
-          {% if request.user.is_superuser or request.user.is_staff %}<details class="airport-editor"><summary>管理这个出口</summary><div class="airport-editor-body">
-            <form class="proxy-resource-form" method="post">{% csrf_token %}<input type="hidden" name="operation" value="exit_update"><input type="hidden" name="exit_id" value="{{ exit.id }}"><label>出口名称<input name="exit_name" value="{{ exit.name }}" maxlength="40" required><small>请使用英文或数字；该名称会直接用于 EXIT 与 VLESS 中转节点。</small></label><label>完整出口节点 YAML<textarea name="exit_proxy_yaml" rows="8" required spellcheck="false" placeholder="粘贴包含连接凭据的完整节点配置"></textarea><small>为保护凭据，此处不预填现有配置。请粘贴完整配置后修改；只切换默认出口可使用下方独立操作。</small></label><label class="toggle-row"><input type="checkbox" name="exit_default" value="yes"{% if exit.default %} checked{% endif %}><span><strong>设为默认出口</strong><small>未单独选择出口的 AWG / VLESS 节点会使用它。</small></span></label><label>当前管理账号密码<input type="password" name="password" required autocomplete="current-password"></label><label class="check-row"><input type="checkbox" name="confirmed" value="yes" required><span>确认更新并刷新 Xray 与全部订阅。</span></label><button class="action-button" type="submit">检查变更</button></form>
+          {% if request.user.is_superuser or request.user.is_staff %}<details class="airport-editor" data-exit-editor><summary>编辑出口 <span class="exit-edit-summary">名称 · 地址 · 端口 · 凭据</span></summary><div class="airport-editor-body">
+            {% include "dashboard/_exit_edit_form.html" %}
             {% if not exit.default %}<form method="post">{% csrf_token %}<input type="hidden" name="operation" value="exit_set_default"><input type="hidden" name="exit_id" value="{{ exit.id }}"><label>设为默认前输入当前密码<input type="password" name="password" required autocomplete="current-password"></label><label class="check-row"><input type="checkbox" name="confirmed" value="yes" required><span>确认将 {{ exit.name }} 设为默认出口。</span></label><button class="secondary-button" type="submit">设为默认</button></form>{% endif %}
             <details class="danger-zone"><summary>删除出口</summary><form class="airport-delete-form" method="post">{% csrf_token %}<input type="hidden" name="operation" value="exit_delete"><input type="hidden" name="exit_id" value="{{ exit.id }}"><label>删除前输入当前密码<input type="password" name="password" required autocomplete="current-password"></label><label class="check-row"><input type="checkbox" name="confirmed" value="yes" required><span>确认删除 {{ exit.name }}；最后一个出口不可删除。</span></label><button class="copy-button danger-quiet" type="submit">预览删除出口</button></form></details>
           </div></details>{% endif %}

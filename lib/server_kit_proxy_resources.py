@@ -386,6 +386,7 @@ def reveal(path: Path, resource: str, item_id: str) -> dict[str, object]:
             "item_id": exit_node["id"],
             "name": exit_node["name"],
             "value": value,
+            "proxy": proxy,
         }
     raise ProxyResourceError("敏感代理资源未登记。")
 

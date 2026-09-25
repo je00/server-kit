@@ -767,6 +767,83 @@ class ControlPlaneTests(unittest.TestCase):
         with self.assertRaisesRegex(TaskEngineError, "国家选择"):
             self.plane.prepare_task_action("network.proxy.update", empty, "owner")
 
+    def test_exit_update_accepts_blank_connection_and_keeps_sensitive_task_contract(self) -> None:
+        for exit_yaml in (
+            "", " \t\n",
+            "type: socks5\nserver: exit.test\nport: 1080\npassword: hidden-password\n",
+        ):
+            with self.subTest(exit_yaml=exit_yaml):
+                values = {
+                    "operation": "exit_update", "airport_id": "", "airport_name": "",
+                    "airport_url": "", "airport_enabled": False, "countries": [],
+                    "exit_id": "333333333333", "exit_name": "Renamed Exit",
+                    "exit_default": False, "exit_proxy_yaml": exit_yaml,
+                    "awg_name": "", "exit_ids": [],
+                }
+                prepared = self.plane.prepare_task_action("network.proxy.update", values, "owner")
+                self.assertEqual(prepared.canonical_action, "network.proxy.update")
+                self.assertNotIn("exit_proxy_yaml", prepared.params)
+                self.assertNotIn("airport_url", prepared.params)
+                self.assertEqual(prepared.sensitive_params, {
+                    "airport_url": "", "exit_proxy_yaml": exit_yaml,
+                })
+                self.assertEqual(prepared.preview["facts"]["出口"], "Renamed Exit")
+                self.assertNotIn("hidden-password", json.dumps(prepared.preview))
+                inspected = self.plane.inspect_task_action(
+                    "network.proxy.update", dict(prepared.params)
+                )
+                self.assertEqual(inspected["fact_digest"], prepared.fact_digest)
+                self.plane.execute_task_action(
+                    "network.proxy.update", {**prepared.params, **prepared.sensitive_params}
+                )
+                self.assertEqual(self.runner.proxy_updates[-1], (values, "owner"))
+
+    def test_exit_add_still_requires_connection_configuration(self) -> None:
+        for exit_yaml in ("", " \t\n"):
+            with self.subTest(exit_yaml=exit_yaml):
+                with self.assertRaisesRegex(TaskEngineError, "出口名称或节点内容无效"):
+                    self.plane.prepare_task_action("network.proxy.update", {
+                        "operation": "exit_add", "airport_id": "", "airport_name": "",
+                        "airport_url": "", "airport_enabled": False, "countries": [],
+                        "exit_id": "", "exit_name": "New Exit", "exit_default": False,
+                        "exit_proxy_yaml": exit_yaml, "awg_name": "", "exit_ids": [],
+                    }, "owner")
+        self.assertEqual(self.runner.proxy_updates, [])
+
+    def test_exit_credentials_stay_encrypted_in_task_storage_and_out_of_public_results(self) -> None:
+        secret = "exit-password-must-never-appear-in-plaintext"
+        exit_yaml = f"type: socks5\nserver: exit.test\nport: 1080\npassword: {secret}\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plane = ControlPlane(self.runner, {1001})
+            engine = ChangeTaskEngine(
+                root / "tasks.sqlite3",
+                plane.prepare_task_action,
+                plane.execute_task_action,
+                plane.inspect_task_action,
+                TaskPayloadCipher(root / "task-payload.key"),
+                start_worker=False,
+            )
+            try:
+                task = engine.preview("network.proxy.update", {
+                    "operation": "exit_update", "airport_id": "", "airport_name": "",
+                    "airport_url": "", "airport_enabled": False, "countries": [],
+                    "exit_id": "333333333333", "exit_name": "Renamed Exit",
+                    "exit_default": False, "exit_proxy_yaml": exit_yaml,
+                    "awg_name": "", "exit_ids": [],
+                }, "owner")
+                self.assertNotIn(secret, json.dumps(task, ensure_ascii=False))
+                self.assertNotIn(secret.encode("utf-8"), (root / "tasks.sqlite3").read_bytes())
+                engine.confirm(str(task["id"]), "owner")
+                self.assertTrue(engine.process_one())
+                detail = engine.get(str(task["id"]))
+                self.assertEqual(detail["state"], "succeeded")
+                self.assertNotIn(secret, json.dumps(detail, ensure_ascii=False))
+                self.assertNotIn(secret.encode("utf-8"), (root / "tasks.sqlite3").read_bytes())
+                self.assertEqual(self.runner.proxy_updates[-1][0]["exit_proxy_yaml"], exit_yaml)
+            finally:
+                engine.close()
+
     def test_node_multi_exit_task_accepts_awg_and_vless_targets(self) -> None:
         values = {
             "operation": "node_exits_set", "airport_id": "", "airport_name": "",

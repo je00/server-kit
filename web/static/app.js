@@ -74,14 +74,24 @@ async function copyText(value) {
 }
 
 let pendingSensitiveAction = null;
+let pendingSensitiveEditRequest = null;
+let sensitiveAuthGeneration = 0;
 
-function openSensitiveAuthModal(button) {
+function openSensitiveAuthModal(button, editRequest = null) {
   const modal = document.querySelector("[data-sensitive-auth-modal]");
   const password = modal?.querySelector("[data-sensitive-auth-password]");
   const context = modal?.querySelector("[data-sensitive-auth-context]");
   const error = modal?.querySelector("[data-sensitive-auth-error]");
   if (!modal || !password) return false;
+  ++sensitiveAuthGeneration;
   pendingSensitiveAction = button;
+  pendingSensitiveEditRequest = editRequest;
+  const submit = modal.querySelector('button[type="submit"]');
+  if (submit) {
+    submit.dataset.idleLabel ||= submit.textContent;
+    submit.textContent = submit.dataset.idleLabel;
+    submit.disabled = false;
+  }
   const actionLabel = button.dataset.secretLabel || ({
     download: "下载客户端配置",
     copy: "复制客户端配置",
@@ -109,8 +119,14 @@ function closeSensitiveAuthModal() {
     error.textContent = "";
     error.hidden = true;
   }
+  ++sensitiveAuthGeneration;
   pendingSensitiveAction = null;
+  pendingSensitiveEditRequest = null;
 }
+
+document.addEventListener("server-kit:exit-edit-cleared", event => {
+  if (pendingSensitiveEditRequest?.form === event.detail.form) closeSensitiveAuthModal();
+});
 
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-copy-text], [data-copy-target]");
@@ -138,22 +154,31 @@ document.addEventListener("click", async (event) => {
 
   const secretButton = event.target.closest("[data-secret-action]");
   if (!secretButton) return;
+  const editRequest = secretButton.dataset.secretAction === "edit-exit"
+    ? beginExitEditorLoad(secretButton) : null;
+  if (secretButton.dataset.secretAction === "edit-exit" && !editRequest) return;
   const form = secretButton.closest("form");
   const csrf = form ? form.querySelector("input[name='csrfmiddlewaretoken']") : null;
   const original = secretButton.textContent;
   secretButton.disabled = true;
   secretButton.textContent = secretButton.dataset.secretAction === "copy" ? "复制中…" : (secretButton.dataset.secretAction === "download" ? "准备中…" : "读取中…");
+  const controller = new AbortController();
+  if (editRequest) editRequest.controller = controller;
+  const timeout = window.setTimeout(() => controller.abort(), 30000);
   try {
     const response = await fetch(secretButton.dataset.endpoint, {
       method: "POST",
       credentials: "same-origin",
+      cache: "no-store",
+      signal: controller.signal,
       headers: {"Accept": "application/json", "X-CSRFToken": csrf ? csrf.value : ""},
     });
     const payload = await response.json();
+    if (editRequest && !isExitEditorLoadCurrent(editRequest)) return;
     if (
       response.status === 403
       && payload.code === "sensitive_unlock_required"
-      && openSensitiveAuthModal(secretButton)
+      && openSensitiveAuthModal(secretButton, editRequest)
     ) {
       secretButton.textContent = original;
       secretButton.disabled = false;
@@ -186,6 +211,9 @@ document.addEventListener("click", async (event) => {
       openManagedModal(modal, secretButton);
       modal.querySelector(".qr-close").focus();
       secretButton.textContent = original;
+    } else if (secretButton.dataset.secretAction === "edit-exit") {
+      loadExitEditorConfig(secretButton, payload, editRequest);
+      secretButton.textContent = original;
     } else if (secretButton.dataset.secretAction === "view") {
       const modal = document.querySelector("[data-secret-modal]");
       const value = modal && modal.querySelector("[data-secret-value]");
@@ -201,9 +229,14 @@ document.addEventListener("click", async (event) => {
       throw new Error("操作未登记");
     }
   } catch (error) {
+    if (editRequest && !isExitEditorLoadCurrent(editRequest)) return;
     secretButton.textContent = "操作失败";
-    showFeedback(error.message || "读取失败，请稍后重试。");
+    showFeedback(error.name === "AbortError" ? "读取超时，当前编辑内容已保留。" : (error.message || "读取失败，请稍后重试。"));
+  } finally {
+    window.clearTimeout(timeout);
+    if (editRequest) finishExitEditorLoad(editRequest);
   }
+  if (editRequest) return;
   window.setTimeout(() => {
     secretButton.textContent = original;
     secretButton.disabled = false;
@@ -235,6 +268,9 @@ document.querySelectorAll("[data-sensitive-auth-form]").forEach((form) => {
     const submit = form.querySelector('button[type="submit"]');
     const error = form.querySelector("[data-sensitive-auth-error]");
     const original = submit?.textContent || "验证并继续";
+    const generation = sensitiveAuthGeneration;
+    const pending = pendingSensitiveAction;
+    const pendingEdit = pendingSensitiveEditRequest;
     if (submit) {
       submit.disabled = true;
       submit.textContent = "验证中…";
@@ -251,21 +287,27 @@ document.querySelectorAll("[data-sensitive-auth-form]").forEach((form) => {
         body: new FormData(form),
       });
       const payload = await response.json();
+      if (generation !== sensitiveAuthGeneration) return;
+      if (pendingEdit && !isExitEditorLoadCurrent(pendingEdit)) {
+        closeSensitiveAuthModal();
+        return;
+      }
       if (!response.ok || !payload.ok) throw new Error(payload.error || "验证失败");
-      const pending = pendingSensitiveAction;
       pendingSensitiveAction = null;
+      pendingSensitiveEditRequest = null;
       const modal = form.closest("[data-sensitive-auth-modal]");
       closeManagedModal(modal);
       form.reset();
-      pending?.click();
+      if (pending?.isConnected) pending.click();
     } catch (failure) {
+      if (generation !== sensitiveAuthGeneration) return;
       if (error) {
         error.textContent = failure.message || "验证失败";
         error.hidden = false;
       }
       form.querySelector("[data-sensitive-auth-password]")?.focus();
     } finally {
-      if (submit) {
+      if (submit && generation === sensitiveAuthGeneration) {
         submit.disabled = false;
         submit.textContent = original;
       }

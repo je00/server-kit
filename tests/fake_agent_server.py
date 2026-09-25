@@ -147,6 +147,29 @@ class PreviewAgent:
         if action == "audit.event":
             return {"recorded": True, "preview_only": True}
         if action == "service.reveal":
+            if params.get("resource") == "exit_config":
+                item_id = params.get("item_id")
+                item = next((item for item in self.data["proxy"]["exits"]
+                             if item["id"] == item_id or item_id == "current" and item["default"]), None)
+                if item is None:
+                    raise ValueError("模拟出口不存在。")
+                # Generated only for an explicit reveal; no supplied credentials are
+                # stored, and public fixture/task responses never contain this map.
+                proxy = ({"type": "vless", "server": item["server"], "port": 443,
+                          "uuid": "00000000-0000-4000-8000-000000000001", "tls": True,
+                          "servername": "preview-tls.example", "network": "ws",
+                          "ws-opts": {"path": "/preview-only", "headers": {"Host": "preview-tls.example"}}}
+                         if item["id"] == "444444444444" else
+                         {"type": "socks5", "server": item["server"], "port": item["port"],
+                          "username": "synthetic-preview-user", "password": "synthetic-preview-exit-secret",
+                          "udp": False, "tls": True, "skip-cert-verify": False,
+                          "interface-name": "preview0", "smux": {"enabled": False}})
+                # JSON values are valid YAML scalars/flow collections, so no
+                # additional YAML dependency is needed by the preview launcher.
+                value = "".join(f"{key}: {json.dumps(value)}\n" for key, value in proxy.items())
+                return {"schema_version": 1, "resource": "exit_config", "item_id": item["id"],
+                        "name": item["name"], "value": value,
+                        "proxy": proxy}
             return {"schema_version": 1, "resource": params.get("resource", ""),
                     "item_id": params.get("item_id", ""), "name": "仅供预览的合成资源",
                     "value": "https://downloads.example/preview-only/resource.yaml",

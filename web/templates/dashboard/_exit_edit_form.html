@@ -1,0 +1,42 @@
+<form class="proxy-resource-form" method="post" data-exit-edit-form autocomplete="off">
+  {% csrf_token %}
+  <input type="hidden" name="operation" value="exit_update">
+  <input type="hidden" name="exit_id" value="{{ exit.id }}">
+  <input type="hidden" name="exit_proxy_base" value="" disabled>
+  <label>出口名称<input name="exit_name" value="{{ exit.name }}" maxlength="40" required><small>名称需包含英文或数字，用于 EXIT 与 VLESS 中转名称。</small></label>
+  <div class="exit-edit-tools">
+    {% if request.user.is_superuser %}<button class="secondary-button" type="button" data-secret-action="edit-exit" data-secret-label="载入出口配置以编辑" data-endpoint="{% url 'network-proxy-secret' exit.id 'exit' %}">载入现有配置</button>{% endif %}
+    <p class="field-hint">只改名称可直接保存。{% if request.user.is_superuser %}修改连接参数，先载入现有配置。{% else %}修改连接参数，请粘贴完整配置；仅超级管理员可读取现有凭据。{% endif %}</p>
+  </div>
+  <p class="field-hint exit-edit-status" data-exit-edit-status role="status" aria-live="polite">未载入凭据；连接配置留空表示保持不变。</p>
+  <fieldset class="exit-input-mode">
+    <legend>连接配置</legend>
+    <div>
+      <label><input type="radio" name="exit_input_mode" value="fields" disabled><span><strong>按字段修改</strong><small>载入 SOCKS5 后可用</small></span></label>
+      <label><input type="radio" name="exit_input_mode" value="yaml" checked><span><strong>完整配置</strong><small>YAML / JSON，支持其他协议</small></span></label>
+    </div>
+  </fieldset>
+  <section class="exit-input-panel" data-exit-input-panel="fields" hidden>
+    <input type="hidden" name="exit_field_type" value="socks5" disabled>
+    <div class="exit-field-grid">
+      <label>协议<input value="SOCKS5" readonly aria-readonly="true" disabled></label>
+      <label>服务器域名或 IP<input name="exit_field_server" maxlength="253" autocomplete="off" spellcheck="false" data-exit-required disabled></label>
+      <label>端口<input type="number" name="exit_field_port" min="1" max="65535" inputmode="numeric" data-exit-required disabled></label>
+      <label>账号<input name="exit_field_username" maxlength="256" autocomplete="off" spellcheck="false" disabled></label>
+      <label>代理密码<input type="password" name="exit_field_password" maxlength="256" autocomplete="new-password" disabled></label>
+    </div>
+    <p class="field-hint">未显示的高级参数保持原样；账号和代理密码一起清空会移除认证。</p>
+  </section>
+  <section class="exit-input-panel exit-yaml-panel" data-exit-input-panel="yaml">
+    <label>完整连接配置（可留空）<textarea name="exit_proxy_yaml" rows="8" spellcheck="false" autocomplete="off" placeholder="留空保留现有连接；或载入／粘贴完整配置后修改"></textarea><small>填写后会完整替换连接配置，请保留仍需使用的高级参数。</small></label>
+  </section>
+  {% if exit.default %}
+  <input type="hidden" name="exit_default" value="yes">
+  <p class="field-hint">当前是默认出口；修改后仍保持默认。</p>
+  {% else %}
+  <label class="toggle-row"><input type="checkbox" name="exit_default" value="yes"><span><strong>同时设为默认出口</strong><small>不勾选则保留当前默认出口。</small></span></label>
+  {% endif %}
+  <label>当前管理账号密码<input type="password" name="password" required autocomplete="current-password"></label>
+  <label class="check-row"><input type="checkbox" name="confirmed" value="yes" required><span>确认更新并刷新 Xray 与全部订阅。</span></label>
+  <div class="exit-edit-actions"><button class="action-button" type="submit">预览保存</button><button class="copy-button" type="button" data-exit-edit-cancel>取消编辑</button></div>
+</form>

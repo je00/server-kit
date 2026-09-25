@@ -435,13 +435,23 @@
   function updateGraphFacts() {
     const matched = new Set(matchingNodes().map(node => node.id));
     const relations = new Map(snapshot.relations.map(relation => [relation.node.id, relation]));
+    // Highlight only the opposite endpoint of the permissions actually drawn
+    // for this direction. Never turn a spoke or an unknown relation into access.
+    const peers = new Set(displayMode === "relations"
+      ? scene.edges.map(edge => direction === "forward" ? edge.target : edge.source) : []);
     for (const node of snapshot.nodes) {
       const button = scene.nodes.get(node.id), chosen = node.id === snapshot.selected_id;
       const relation = relations.get(node.id);
-      button.className = `topology-node kind-${node.kind} availability-${node.availability}${node.kind === "hub" ? " is-hub" : ""}${matched.has(node.id) ? " is-match" : ""}`;
+      const peer = !chosen && peers.has(node.id);
+      const role = chosen ? "当前观察节点" : peer
+        ? `${direction === "forward" ? "已授权目标" : "已授权来源"}，${relation?.[direction].label || "已授权"}`
+        : relation?.label || "中心网关";
+      button.className = `topology-node kind-${node.kind} availability-${node.availability}${node.kind === "hub" ? " is-hub" : ""}${matched.has(node.id) ? " is-match" : ""}${peer ? " is-peer" : ""}`;
+      if (peer) button.dataset.topologyPeer = direction === "forward" ? "outbound" : "inbound";
+      else delete button.dataset.topologyPeer;
       button.setAttribute("aria-pressed", String(chosen));
-      button.setAttribute("aria-label", `${node.name}，${node.kind_label}，${node.state}，在线未检测，${chosen ? "当前观察节点" : relation?.label || "中心网关"}。可拖动调整布局。`);
-      button.title = `${node.name} · ${node.address || node.kind_label} · ${node.state} · 在线未检测`;
+      button.setAttribute("aria-label", `${node.name}，${node.kind_label}，${node.state}，在线未检测，${role}。可拖动调整布局。`);
+      button.title = `${node.name} · ${node.kind_label}${node.address ? ` · ${node.address}` : ""} · ${node.state} · ${role} · 在线未检测`;
       button.querySelector("strong").textContent = node.name;
       button.querySelector(".topology-node-state").textContent = node.kind === "hub" ? "中心网关" : [node.kind.toUpperCase(), node.availability !== "enabled" ? node.state : ""].filter(Boolean).join(" · ");
     }

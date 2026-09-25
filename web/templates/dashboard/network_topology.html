@@ -12,7 +12,7 @@
   {% include "dashboard/_navigation.html" %}
   <main id="main-content" tabindex="-1" class="content detail-content topology-content" data-topology-root>
     <header class="page-header">
-      <div><p class="eyebrow">设备与访问控制</p><h1>节点连接</h1><p class="muted">以 VPS 为中心，查看节点接入方式与双向访问权限。</p></div>
+      <div><p class="eyebrow">设备与访问控制</p><h1>节点连接</h1><p class="muted">在同一张图中查看全部节点，拖动整理关系，沿虚线查看访问端口。</p></div>
       <span class="stage-badge">配置视图 · 只读</span>
     </header>
     {% include "dashboard/_node_view_tabs.html" with active_node_view="topology" %}
@@ -24,35 +24,43 @@
       <a class="secondary-button" href="{% url 'network-topology' %}">重新加载</a>
     </section>
     {% else %}
-    <div class="topology-note"><span class="topology-note-icon" aria-hidden="true">i</span><p data-topology-note>{{ topology.note|default:'此图根据当前配置推导授权关系，不代表实时连通；节点在线状态未检测。' }}</p></div>
-
     <section class="topology-overview" aria-label="节点配置概览" data-topology-summary>
-      <div><span>设备节点</span><strong data-topology-count="nodes">{{ topology.summary.nodes|default:0 }}</strong></div>
-      <div><span>AWG 双向接入</span><strong data-topology-count="awg">{{ topology.summary.awg|default:0 }}</strong></div>
-      <div><span>VLESS 单向接入</span><strong data-topology-count="vless">{{ topology.summary.vless|default:0 }}</strong></div>
-      <div><span>配置已启用</span><strong data-topology-count="enabled">{{ topology.summary.enabled|default:0 }}</strong></div>
+      <div><span>设备</span><strong data-topology-count="nodes">{{ topology.summary.nodes|default:0 }}</strong></div>
+      <div><span>AWG</span><strong data-topology-count="awg">{{ topology.summary.awg|default:0 }}</strong></div>
+      <div><span>VLESS</span><strong data-topology-count="vless">{{ topology.summary.vless|default:0 }}</strong></div>
+      <div><span>已启用</span><strong data-topology-count="enabled">{{ topology.summary.enabled|default:0 }}</strong></div>
     </section>
 
     <section class="topology-panel" aria-labelledby="topology-graph-heading">
-      <div class="topology-panel-heading"><div><p class="eyebrow">星形接入</p><h2 id="topology-graph-heading">所有节点经由 VPS</h2></div><div class="topology-snapshot"><span>配置读取时间</span><time data-topology-observed-at>{{ topology.observed_at }}</time></div></div>
+      <div class="topology-panel-heading"><div><h2 id="topology-graph-heading">全部节点 · 访问端口</h2></div><div class="topology-snapshot"><span>配置读取</span><time data-topology-observed-at>{{ topology.observed_at }}</time></div></div>
       <form class="topology-controls" method="get" action="{% url 'network-topology' %}" data-topology-form>
         <label class="topology-source"><span>选择观察节点</span><select name="node" data-topology-select>{% for node in topology.nodes %}<option value="{{ node.id }}"{% if node.id == topology.selected_id %} selected{% endif %}>{{ node.name }} · {{ node.kind_label }}</option>{% endfor %}</select></label>
         <button class="secondary-button" type="submit" data-topology-submit>查看关系</button>
-        <button class="secondary-button" type="button" data-topology-refresh hidden><span aria-hidden="true">↻</span> 刷新配置</button>
+        <button class="secondary-button" type="button" data-topology-refresh hidden><span aria-hidden="true">↻</span> 刷新</button>
       </form>
-      <p class="topology-status" role="status" aria-live="polite" aria-atomic="true" data-topology-status>选择节点后，可查看它与其他节点的访问方向和端口范围。</p>
+      <p class="topology-status" role="status" aria-live="polite" aria-atomic="true" data-topology-status>点击节点查看方向与完整端口。</p>
 
       <div class="topology-enhancement" data-topology-enhancement hidden>
-        <div class="topology-graph-tools"><label class="topology-search"><span class="sr-only">搜索图中节点名称、类型或地址</span><input type="search" placeholder="搜索图中节点、类型或地址" autocomplete="off" data-topology-search></label><span class="topology-graph-caption">点击节点查看权限</span></div>
-        <div class="topology-graph" data-topology-graph role="group" aria-label="以 VPS 为中心的节点配置图"></div>
-        <div class="topology-pagination"><p data-topology-page aria-live="polite"></p><div><button class="secondary-button" type="button" data-topology-prev aria-label="上一页节点">← 上一页</button><button class="secondary-button" type="button" data-topology-next aria-label="下一页节点">下一页 →</button></div></div>
-        <div class="topology-legend" aria-label="图例">
-          <span class="topology-legend-title">与所选节点的授权</span><span><i class="topology-dot relation-mutual"></i>双向有授权</span><span><i class="topology-dot relation-outbound"></i>我可访问</span><span><i class="topology-dot relation-inbound"></i>可访问我</span><span><i class="topology-dot relation-denied"></i>未授权 / 不可用</span><span><i class="topology-dot relation-unknown"></i>未知 / 不适用</span>
+        <div class="topology-graph-tools">
+          <div class="topology-search-row"><label class="topology-search"><span class="sr-only">搜索并定位节点名称、类型或地址；不隐藏其他节点</span><input type="search" placeholder="搜索并定位节点" autocomplete="off" data-topology-search></label><button class="secondary-button" type="button" data-topology-find-next>下个匹配</button></div>
+          <label class="topology-focus"><input type="checkbox" data-topology-focus><span>聚焦所选节点的关系</span></label>
         </div>
-        <p class="topology-graph-note"><span>↔ AWG 双向隧道</span><span>→ VLESS 单向接入 VPS</span><span>线条表示接入结构；授权范围见下方详情。</span></p>
+        <div class="topology-canvas-toolbar" role="group" aria-label="画布视图控制">
+          <div class="topology-zoom-controls"><button class="secondary-button" type="button" data-topology-zoom-out aria-label="缩小画布">−</button><output data-topology-zoom aria-label="当前缩放比例">100%</output><button class="secondary-button" type="button" data-topology-zoom-in aria-label="放大画布">＋</button></div>
+          <button class="secondary-button" type="button" data-topology-fit>适配全部</button><button class="secondary-button" type="button" data-topology-reset title="重新排列所有节点">重排</button>
+        </div>
+        <p class="topology-canvas-help" id="topology-canvas-help">拖节点 · 拖空白平移 · 滚轮 / 双指缩放<span class="sr-only">。聚焦画布后使用方向键平移、加减键缩放、数字 0 适配全部；聚焦节点后按 Alt 和方向键可移动节点。</span></p>
+        <div class="topology-graph" data-topology-graph role="group" tabindex="0" aria-label="可拖动的全部节点与授权关系图" aria-describedby="topology-canvas-help"></div>
+        <p class="topology-canvas-summary" data-topology-canvas-summary role="status" aria-live="polite"></p>
+        <div class="topology-legend" aria-label="图例">
+          <span><i class="topology-legend-line permission-line" aria-hidden="true"></i>虚线箭头＋端口：已配置授权</span><span><i class="topology-legend-line structure-line" aria-hidden="true"></i>细线：经 VPS 接入</span><span><i class="topology-dot relation-outbound"></i>AWG</span><span><i class="topology-dot relation-inbound"></i>VLESS</span>
+        </div>
+        <p class="topology-graph-note"><strong>权限线不是直连，通信仍经 VPS。</strong><span>双箭头表示两个方向拥有相同范围；长端口标签可点选来源节点查看完整详情。没有权限线不代表已确认拒绝，待核实和禁用情况见下方。</span><span>拖动只调整本页布局，不修改配置；在线状态未检测。</span></p>
       </div>
       <noscript><p class="topology-noscript">当前未启用 JavaScript，交互图暂不可用。可通过上方选择框切换节点，下方提供完整的访问关系。</p></noscript>
     </section>
+
+    <div class="topology-note"><span class="topology-note-icon" aria-hidden="true">i</span><p data-topology-note>{{ topology.note|default:'此图根据当前配置推导授权关系，不代表实时连通；节点在线状态未检测。' }}</p></div>
 
     <div class="topology-warnings" data-topology-warnings{% if not topology.warnings %} hidden{% endif %}>{% for warning in topology.warnings %}<p class="alert neutral">{{ warning }}</p>{% endfor %}</div>
 

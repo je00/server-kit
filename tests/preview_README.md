@@ -56,9 +56,11 @@ synthetic scenario. Revealed configurations and credentials are synthetic; the
 fake agent never retains submitted proxy credentials. Add `--races-only` to
 repeat the concurrency, lossless-input, retained-card and pagehide cases alone.
 
-The topology audit checks hub-only star links, directed permission details,
-touch/keyboard selection, search/pagination, and stale/error responses. It uses
-synthetic snapshots only; enabled nodes are never presented as proven online.
+The topology audit checks every node on one canvas, VPS access structure,
+dashed permission arrows with protocol/port labels, node dragging, pan/zoom,
+search highlighting, keyboard selection, and stale/error responses. Layout
+changes stay in the browser; no network settings are changed. It uses synthetic
+snapshots only; enabled nodes are never presented as proven online.
 
 The default rich scenario renders 41 review routes. Use the index to reset or
 switch scenarios; this resets every tab attached to that instance, so use a

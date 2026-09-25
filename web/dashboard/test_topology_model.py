@@ -30,6 +30,7 @@ class TopologyModelTests(unittest.TestCase):
                 self.assertEqual(model["selected"]["id"], "hub")
                 self.assertEqual(model["selected_id"], "hub")
                 self.assertEqual(model["relations"], [])
+                self.assertEqual(model["links"], [])
                 self.assertEqual(model["summary"]["nodes"], 0)
                 json.dumps(model)
 
@@ -180,11 +181,87 @@ class TopologyModelTests(unittest.TestCase):
         self.assertEqual(len(model["warnings"]), 2)
         self.assertEqual(set(model["nodes"][1]), {"id", "name", "kind", "kind_label", "address", "state", "availability", "protected", "online_label"})
 
-    def test_only_selected_node_relations_are_computed(self):
+    def test_links_include_every_confirmed_direction_with_compact_protocol_ranges(self):
+        overview = {"nodes": [
+            node("desk"),
+            node("nas", address="10.20.0.20", access_mode="restricted", permissions=[
+                rule("desk", network="udp", ports=[53]), rule("vps", "10.20.0.1", ports=[8080]),
+            ]),
+            node("phone", "vless", permissions=[
+                rule("desk", ports=[22, 8000, 8001, 8002]), rule("desk", network="udp", ports=[53]),
+            ]),
+            node("sensor", address="10.20.0.30", access_mode="restricted", permissions=[rule("desk", ports=[443])]),
+        ]}
+        model = build_topology(overview)
+        links = {(link["source"], link["target"]): link for link in model["links"]}
+        self.assertEqual(set(links), {
+            ("awg:desk", "hub"), ("awg:desk", "awg:nas"), ("awg:desk", "awg:sensor"),
+            ("awg:nas", "hub"), ("awg:nas", "awg:desk"),
+            ("vless:phone", "awg:desk"), ("awg:sensor", "awg:desk"),
+        })
+        self.assertEqual(links["vless:phone", "awg:desk"], {
+            "source": "vless:phone", "target": "awg:desk", "status": "partial",
+            "label": "TCP · 22, 8000-8002；UDP · 53", "scopes": ["TCP · 22, 8000-8002", "UDP · 53"],
+        })
+        self.assertEqual(links["awg:desk", "awg:nas"]["status"], "allowed")
+        self.assertEqual(links["awg:nas", "awg:desk"]["label"], "UDP · 53")
+        valid_ids = {node["id"] for node in model["nodes"]}
+        self.assertEqual(len(links), len(model["links"]))
+        for link in model["links"]:
+            self.assertEqual(set(link), {"source", "target", "status", "label", "scopes"})
+            self.assertIn(link["source"], valid_ids)
+            self.assertIn(link["target"], valid_ids)
+            self.assertNotEqual(link["source"], link["target"])
+            self.assertIn(link["status"], {"allowed", "partial"})
+
+    def test_unknown_inactive_and_inapplicable_pairs_never_become_links(self):
+        overview = {"nodes": [
+            node("desk"), node("disabled", state="已禁用"),
+            node("pending", state="等待首次握手"), node("unknown", state=None),
+            node("bad-address", address="invalid"),
+            node("vless-all", "vless", permissions=[rule("all", "10.20.0.0/24", "all", [])]),
+            node("vless-vps", "vless", permissions=[rule("vps", "10.20.0.1", "all", [])]),
+            node("stale-ip", "vless", permissions=[rule("desk", "192.0.2.99", "all", [])]),
+        ]}
+        model = build_topology(overview)
+        self.assertEqual(model["links"], [{
+            "source": "awg:desk", "target": "hub", "status": "allowed",
+            "label": "全部协议 · 全部端口", "scopes": ["全部协议 · 全部端口"],
+        }])
+
+    def test_links_remain_identical_when_selection_changes(self):
+        overview = {"nodes": [
+            node("desk"), node("nas", address="10.20.0.20"),
+            node("phone", "vless", permissions=[rule("desk")]),
+        ]}
+        original = copy.deepcopy(overview)
+        models = [build_topology(overview, identifier) for identifier in ("hub", "awg:desk", "awg:nas", "vless:phone")]
+        for model in models:
+            self.assertEqual(model["links"], models[0]["links"])
+            links = {(edge["source"], edge["target"]): edge for edge in model["links"]}
+            for edge in model["relations"]:
+                for direction, pair in (
+                    ("forward", (model["selected_id"], edge["node"]["id"])),
+                    ("reverse", (edge["node"]["id"], model["selected_id"])),
+                ):
+                    access = edge[direction]
+                    if access["status"] in {"allowed", "partial"}:
+                        self.assertEqual(links[pair]["status"], access["status"])
+                        self.assertEqual(links[pair]["scopes"], access["scopes"])
+                    else:
+                        self.assertNotIn(pair, links)
+        self.assertEqual(overview, original)
+
+    def test_all_node_links_have_bounded_work_and_compact_payload(self):
         import dashboard.topology as topology
-        nodes = [node(f"node-{i}") for i in range(200)]
+        nodes = [node(f"node-{i}", address=f"10.20.0.{i + 2}") for i in range(200)]
         with patch.object(topology, "_access", wraps=topology._access) as calculate:
             model = build_topology({"nodes": nodes})
         self.assertEqual(len(model["relations"]), 200)
-        self.assertEqual(calculate.call_count, 400)
+        self.assertEqual(len(model["links"]), 40_000)
+        pairs = [(call.args[0]["id"], call.args[1]["id"]) for call in calculate.call_args_list]
+        self.assertEqual(len(pairs), len(set(pairs)), "selected pairs must be reused")
+        self.assertLessEqual(calculate.call_count, len(model["nodes"]) * (len(model["nodes"]) - 1))
+        encoded = json.dumps(model, ensure_ascii=False, separators=(",", ":")).encode()
+        self.assertLess(len(encoded), 8_000_000, "full links must not repeat detailed node or access objects")
         self.assertEqual(model["summary"], {"nodes": 200, "awg": 200, "vless": 0, "enabled": 200, "disabled": 0, "pending": 0})

@@ -57,6 +57,10 @@ class TopologyViewTests(TestCase):
                         self.assertEqual(value["selected_id"], "awg:desktop")
                         self.assertIn("observed_at", value)
                         self.assertEqual(len(value["nodes"]), 3)
+                        self.assertEqual(value["links"], [{
+                            "source": "awg:desktop", "target": "hub", "status": "allowed",
+                            "label": "全部协议 · 全部端口", "scopes": ["全部协议 · 全部端口"],
+                        }])
                     else:
                         self.assertContains(response, "data-topology-root")
                         self.assertContains(response, "未检测")
@@ -78,9 +82,29 @@ class TopologyViewTests(TestCase):
     def test_selection_and_unknown_id_remain_read_only(self, read):
         response = self.client.get(self.url, {"format": "json", "node": "vless:phone"})
         self.assertEqual(response.json()["selected_id"], "vless:phone")
+        all_links = response.json()["links"]
         response = self.client.get(self.url, {"format": "json", "node": "not-a-node"})
         self.assertEqual(response.json()["selected_id"], "awg:desktop")
+        self.assertEqual(response.json()["links"], all_links)
         self.assertEqual(read.call_count, 2)
+
+    @patch("dashboard.topology_views.network_overview")
+    def test_graph_keeps_all_nodes_and_links_without_pagination(self, read):
+        read.return_value = {"nodes": [
+            {"name": f"device-{index}", "kind": "awg", "address": f"10.44.0.{index + 2}",
+             "state": "已启用", "protected": False, "access_mode": "unrestricted", "permissions": []}
+            for index in range(40)
+        ]}
+        response = self.client.get(self.url, {"format": "json", "page": 2, "limit": 5})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["nodes"]), 41)
+        self.assertEqual(len(response.json()["links"]), 1600)
+        read.assert_called_once_with()
+        response = self.client.get(self.url)
+        self.assertNotContains(response, "data-topology-prev")
+        self.assertNotContains(response, "data-topology-next")
+        self.assertContains(response, "data-topology-fit")
+        self.assertContains(response, "data-topology-reset")
 
     @patch("dashboard.topology_views.network_overview")
     def test_read_failures_return_noncacheable_generic_error_without_fake_nodes(self, read):
@@ -114,3 +138,4 @@ class TopologyViewTests(TestCase):
         self.assertEqual(response.json()["selected_id"], "hub")
         self.assertEqual(response.json()["summary"]["nodes"], 0)
         self.assertEqual(response.json()["relations"], [])
+        self.assertEqual(response.json()["links"], [])

@@ -178,7 +178,7 @@ def _relationship(forward: dict, reverse: dict) -> tuple[str, str]:
 
 
 def build_topology(overview: object, selected_id: str = "") -> dict[str, Any]:
-    """Build only selected-node relations; do not probe, mutate, or expose secrets."""
+    """Project all confirmed access links and selected details without probing."""
     overview = overview if isinstance(overview, dict) else {}
     hub = {"id": "hub", "name": "VPS", "kind": "hub", "kind_label": "中心节点", "address": "",
            "state": "服务端", "availability": "hub", "protected": False, "online_label": "未检测"}
@@ -222,6 +222,29 @@ def build_topology(overview: object, selected_id: str = "") -> dict[str, Any]:
         reverse = _access(target, selected, records, awg_by_name)
         relation, label = _relationship(forward, reverse)
         relations.append({"node": target, "forward": forward, "reverse": reverse, "relation": relation, "label": label})
+    # Keep the whole graph independent of selection, reusing its detailed checks.
+    # Hub-origin, VLESS-target and inactive pairs cannot produce confirmed links.
+    selected_access = {}
+    for relation in relations:
+        target_id = relation["node"]["id"]
+        selected_access[selected["id"], target_id] = relation["forward"]
+        selected_access[target_id, selected["id"]] = relation["reverse"]
+    sources = [node for node in nodes if node["availability"] == "enabled"
+               and (node["kind"] == "vless" or node["address"])]
+    targets = [node for node in nodes if node["kind"] == "hub"
+               or (node["kind"] == "awg" and node["availability"] == "enabled" and node["address"])]
+    links = []
+    for source in sources:
+        for target in targets:
+            if source["id"] == target["id"]:
+                continue
+            access = selected_access.get((source["id"], target["id"]))
+            if access is None:
+                access = _access(source, target, records, awg_by_name)
+            if access["status"] in {"allowed", "partial"}:
+                scopes = list(access["scopes"])
+                links.append({"source": source["id"], "target": target["id"],
+                              "status": access["status"], "label": "；".join(scopes), "scopes": scopes})
     if overview.get("pending_access") is True:
         warnings.append("AWG 有待应用的权限变更；本图仍按当前保存的活动配置展示。")
     if overview.get("pending_vless") is True:
@@ -231,5 +254,5 @@ def build_topology(overview: object, selected_id: str = "") -> dict[str, Any]:
         summary[node["kind"]] += 1
         if node["availability"] in {"enabled", "disabled", "pending"}:
             summary[node["availability"]] += 1
-    return {"nodes": nodes, "selected_id": selected["id"], "selected": selected, "relations": relations, "summary": summary,
+    return {"nodes": nodes, "selected_id": selected["id"], "selected": selected, "relations": relations, "links": links, "summary": summary,
             "warnings": list(dict.fromkeys(warnings)), "note": _NOTE}

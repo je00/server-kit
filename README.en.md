@@ -1,10 +1,12 @@
 # server-kit
 
-Connect your devices through a Debian VPS. Manage access and services in a private dashboard.
+A star network with one Debian VPS at the center. Manage access and services in a private dashboard.
 
 [中文](README.md) · [Easy English](README.en.md) · [Start here](#quick-start)
 
-![AWG connects both ways through the VPS, with full LAN access by default after the first handshake is confirmed; no proxy provider or extra exit is needed. VLESS reaches allowed targets one way, with no LAN access by default. Set target, TCP/UDP and port-range rules in batches.](docs/images/network-map-en.svg)
+![Star topology: each device connects to the central VPS. Private traffic passes through the VPS, not direct P2P links. AWG allows two-way access and full LAN access by default after the first handshake is confirmed. VLESS starts one-way access through the VPS to allowed targets, with no LAN access by default. Set target, TCP/UDP and port-range rules in batches. Basic AWG needs no proxy provider or extra exit.](docs/images/network-map-en.svg)
+
+VPS / AWG down → private links between devices stop. Speed and delay depend on the VPS and both links. Main and backup endpoints use the same VPS: **no backup server**.
 
 ## Quick start
 

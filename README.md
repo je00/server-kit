@@ -1,10 +1,12 @@
 # server-kit
 
-一台 Debian VPS，连通设备，在内网面板管理权限与服务。
+以 Debian VPS 为中心的星形内网，在内网面板管理权限与服务。
 
 [中文](README.md) · [Easy English](README.en.md) · [直接部署](#快速部署)
 
-![AWG 经 VPS 双向互联，首次握手确认后默认全内网互通，无需机场或额外出口；VLESS 经 VPS 单向访问授权目标，默认无内网权限；按目标、TCP/UDP 和端口范围控制，支持批量添加](docs/images/network-map-zh.svg)
+![星形拓扑：设备分别连接中心 VPS，内网互访经 VPS 转发，不做 P2P 直连。AWG 双向互联，首次握手确认后默认全内网互通；VLESS 经 VPS 单向访问授权目标，默认无内网权限。按目标、TCP/UDP 和端口范围批量授权；基础 AWG 无需机场或额外出口。](docs/images/network-map-zh.svg)
+
+VPS / AWG 不可用 → 跨节点内网互访中断；速度与延迟受 VPS 和两段链路影响。主备入口在同一 VPS，**不是双机容灾**。
 
 ## 快速部署
 

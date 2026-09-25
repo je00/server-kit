@@ -6,6 +6,7 @@ This targeted source lint does not replace checking GitHub's rendered HTML.
 import re
 import unicodedata
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -50,6 +51,54 @@ class ReadmeMarkupTests(unittest.TestCase):
             with self.subTest(document=name):
                 # GFM autolinks can consume closing ** beside Chinese punctuation.
                 self.assertNotRegex((root / name).read_text(), r"\*\*https?://[^*\s]+\*\*")
+
+    def test_both_readmes_link_accessible_star_topology_diagrams(self):
+        root = Path(__file__).resolve().parents[1]
+        namespace = {"svg": "http://www.w3.org/2000/svg"}
+        for name, language, topology in (("README.md", "zh", "星形"),
+                                         ("README.en.md", "en", "star")):
+            with self.subTest(document=name):
+                source = (root / name).read_text()
+                image = f"docs/images/network-map-{language}.svg"
+                self.assertIn(topology, source.lower())
+                self.assertIn(f"]({image})", source)
+                diagram = ET.parse(root / image).getroot()
+                self.assertEqual(diagram.attrib.get("role"), "img")
+                self.assertEqual(diagram.attrib.get("aria-labelledby"), "title desc")
+                for tag in ("title", "desc"):
+                    element = diagram.find(f"svg:{tag}", namespace)
+                    self.assertIsNotNone(element)
+                    self.assertEqual(element.attrib.get("id"), tag)
+                    self.assertTrue(element.text.strip())
+                description = diagram.find("svg:desc", namespace).text
+                self.assertIn("VPS", description)
+                self.assertIn("P2P", description)
+
+    def test_topology_arrowheads_leave_visible_straight_shafts(self):
+        root = Path(__file__).resolve().parents[1]
+        namespace = {"svg": "http://www.w3.org/2000/svg"}
+        for language in ("zh", "en"):
+            with self.subTest(language=language):
+                diagram = ET.parse(root / f"docs/images/network-map-{language}.svg").getroot()
+                marker = diagram.find(".//svg:marker[@id='arrow']", namespace)
+                # The default strokeWidth units magnified both heads until
+                # they touched, making a short two-way link look like a spindle.
+                self.assertEqual(marker.attrib.get("markerUnits"), "userSpaceOnUse")
+                self.assertEqual(marker.attrib.get("orient"), "auto-start-reverse")
+                head_width = float(marker.attrib["markerWidth"])
+                self.assertGreater(head_width, 0)
+                lines = diagram.findall("svg:path[@class='line']", namespace)
+                self.assertEqual(sum("marker-start" in line.attrib for line in lines), 4)
+                self.assertEqual(len(lines), 6)
+                for line in lines:
+                    match = re.fullmatch(r"M([\d.]+) ([\d.]+) ([HV])([\d.]+)", line.attrib["d"])
+                    self.assertIsNotNone(match)
+                    x, y, direction, end = match.groups()
+                    length = abs(float(end) - float(x if direction == "H" else y))
+                    heads = sum(key in line.attrib for key in ("marker-start", "marker-end"))
+                    # Conservatively subtract entire marker boxes. 16 SVG
+                    # units remain visible even when the image is scaled down.
+                    self.assertGreaterEqual(length - heads * head_width, 16)
 
 
 if __name__ == "__main__":

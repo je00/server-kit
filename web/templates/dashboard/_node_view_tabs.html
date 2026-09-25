@@ -1,0 +1,4 @@
+<nav class="node-view-tabs" aria-label="节点视图">
+  <a href="{% url 'network-nodes' %}"{% if active_node_view == 'nodes' %} aria-current="page"{% endif %}>节点列表</a>
+  <a href="{% url 'network-topology' %}"{% if active_node_view == 'topology' %} aria-current="page"{% endif %}>连接视图</a>
+</nav>

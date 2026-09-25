@@ -30,9 +30,10 @@ node tests/run_web_visual_audit.cjs http://127.0.0.1:8765/
 node tests/run_mobile_render_ui.cjs http://127.0.0.1:8765/
 node tests/run_login_ui.cjs http://127.0.0.1:8765/
 node tests/run_exit_edit_ui.cjs http://127.0.0.1:8765/
+node tests/run_topology_ui.cjs http://127.0.0.1:8765/
 ```
 
-It signs in with the demo account, captures all 40 routes at 320, 390, 768 and
+It signs in with the demo account, captures all 41 routes at 320, 390, 768 and
 1440 pixels, checks page overflow/headings, and writes PNGs plus `report.json`
 to a new temporary directory. All non-preview-origin requests are blocked.
 Inspect screenshots too: automated checks cannot judge visual hierarchy.
@@ -55,7 +56,11 @@ synthetic scenario. Revealed configurations and credentials are synthetic; the
 fake agent never retains submitted proxy credentials. Add `--races-only` to
 repeat the concurrency, lossless-input, retained-card and pagehide cases alone.
 
-The default rich scenario renders 40 review routes. Use the index to reset or
+The topology audit checks hub-only star links, directed permission details,
+touch/keyboard selection, search/pagination, and stale/error responses. It uses
+synthetic snapshots only; enabled nodes are never presented as proven online.
+
+The default rich scenario renders 41 review routes. Use the index to reset or
 switch scenarios; this resets every tab attached to that instance, so use a
 separate port for simultaneous reviews. Static files and templates reflect
 edits on reload. Restart the preview to pick up Python code changes.

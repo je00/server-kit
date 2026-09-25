@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}节点连接 · server-kit{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="{% static 'topology.css' %}">
+<script src="{% static 'topology.js' %}" defer></script>
+{% endblock %}
+
+{% block body %}
+<div class="app-shell">
+  {% include "dashboard/_navigation.html" %}
+  <main id="main-content" tabindex="-1" class="content detail-content topology-content" data-topology-root>
+    <header class="page-header">
+      <div><p class="eyebrow">设备与访问控制</p><h1>节点连接</h1><p class="muted">以 VPS 为中心，查看节点接入方式与双向访问权限。</p></div>
+      <span class="stage-badge">配置视图 · 只读</span>
+    </header>
+    {% include "dashboard/_node_view_tabs.html" with active_node_view="topology" %}
+    {% include "dashboard/_messages.html" %}
+
+    {% if topology_error %}
+    <section class="empty-state topology-empty" role="alert">
+      <p class="eyebrow">读取失败</p><h2>暂时无法显示连接关系</h2><p>{{ topology_error }}</p>
+      <a class="secondary-button" href="{% url 'network-topology' %}">重新加载</a>
+    </section>
+    {% else %}
+    <div class="topology-note"><span class="topology-note-icon" aria-hidden="true">i</span><p data-topology-note>{{ topology.note|default:'此图根据当前配置推导授权关系，不代表实时连通；节点在线状态未检测。' }}</p></div>
+
+    <section class="topology-overview" aria-label="节点配置概览" data-topology-summary>
+      <div><span>设备节点</span><strong data-topology-count="nodes">{{ topology.summary.nodes|default:0 }}</strong></div>
+      <div><span>AWG 双向接入</span><strong data-topology-count="awg">{{ topology.summary.awg|default:0 }}</strong></div>
+      <div><span>VLESS 单向接入</span><strong data-topology-count="vless">{{ topology.summary.vless|default:0 }}</strong></div>
+      <div><span>配置已启用</span><strong data-topology-count="enabled">{{ topology.summary.enabled|default:0 }}</strong></div>
+    </section>
+
+    <section class="topology-panel" aria-labelledby="topology-graph-heading">
+      <div class="topology-panel-heading"><div><p class="eyebrow">星形接入</p><h2 id="topology-graph-heading">所有节点经由 VPS</h2></div><div class="topology-snapshot"><span>配置读取时间</span><time data-topology-observed-at>{{ topology.observed_at }}</time></div></div>
+      <form class="topology-controls" method="get" action="{% url 'network-topology' %}" data-topology-form>
+        <label class="topology-source"><span>选择观察节点</span><select name="node" data-topology-select>{% for node in topology.nodes %}<option value="{{ node.id }}"{% if node.id == topology.selected_id %} selected{% endif %}>{{ node.name }} · {{ node.kind_label }}</option>{% endfor %}</select></label>
+        <button class="secondary-button" type="submit" data-topology-submit>查看关系</button>
+        <button class="secondary-button" type="button" data-topology-refresh hidden><span aria-hidden="true">↻</span> 刷新配置</button>
+      </form>
+      <p class="topology-status" role="status" aria-live="polite" aria-atomic="true" data-topology-status>选择节点后，可查看它与其他节点的访问方向和端口范围。</p>
+
+      <div class="topology-enhancement" data-topology-enhancement hidden>
+        <div class="topology-graph-tools"><label class="topology-search"><span class="sr-only">搜索图中节点名称、类型或地址</span><input type="search" placeholder="搜索图中节点、类型或地址" autocomplete="off" data-topology-search></label><span class="topology-graph-caption">点击节点查看权限</span></div>
+        <div class="topology-graph" data-topology-graph role="group" aria-label="以 VPS 为中心的节点配置图"></div>
+        <div class="topology-pagination"><p data-topology-page aria-live="polite"></p><div><button class="secondary-button" type="button" data-topology-prev aria-label="上一页节点">← 上一页</button><button class="secondary-button" type="button" data-topology-next aria-label="下一页节点">下一页 →</button></div></div>
+        <div class="topology-legend" aria-label="图例">
+          <span class="topology-legend-title">与所选节点的授权</span><span><i class="topology-dot relation-mutual"></i>双向有授权</span><span><i class="topology-dot relation-outbound"></i>我可访问</span><span><i class="topology-dot relation-inbound"></i>可访问我</span><span><i class="topology-dot relation-denied"></i>未授权 / 不可用</span><span><i class="topology-dot relation-unknown"></i>未知 / 不适用</span>
+        </div>
+        <p class="topology-graph-note"><span>↔ AWG 双向隧道</span><span>→ VLESS 单向接入 VPS</span><span>线条表示接入结构；授权范围见下方详情。</span></p>
+      </div>
+      <noscript><p class="topology-noscript">当前未启用 JavaScript，交互图暂不可用。可通过上方选择框切换节点，下方提供完整的访问关系。</p></noscript>
+    </section>
+
+    <div class="topology-warnings" data-topology-warnings{% if not topology.warnings %} hidden{% endif %}>{% for warning in topology.warnings %}<p class="alert neutral">{{ warning }}</p>{% endfor %}</div>
+
+    <section class="topology-details" data-topology-details aria-labelledby="topology-selected-heading">
+      <div class="topology-selected">
+        <div><p class="eyebrow">当前观察节点</p><h2 id="topology-selected-heading">{{ topology.selected.name }}</h2><p>{{ topology.selected.kind_label }}{% if topology.selected.address %} · {{ topology.selected.address }}{% endif %}</p></div>
+        <dl><div><dt>配置状态</dt><dd>{{ topology.selected.state }}</dd></div><div><dt>在线状态</dt><dd>{{ topology.selected.online_label|default:'未检测' }}</dd></div>{% if topology.selected.protected %}<div><dt>节点角色</dt><dd>管理入口</dd></div>{% endif %}</dl>
+      </div>
+      <p class="topology-detail-note">以下为配置允许的方向，允许部分端口不等于完全互通。目标的防火墙、服务与实际在线情况仍可能影响连接。</p>
+      <div class="topology-direction-grid">
+        <section class="topology-direction" aria-labelledby="topology-outbound-heading"><div class="topology-direction-heading"><span aria-hidden="true">↗</span><div><h3 id="topology-outbound-heading">我可访问</h3><p>从当前节点发起连接</p></div></div>
+          <ul class="topology-relations" data-topology-outbound>
+            {% for relation in topology.relations %}
+            <li class="topology-relation" data-relation-status="{{ relation.forward.status }}">
+              <div class="topology-relation-heading"><strong>{{ relation.node.name }}</strong><span class="topology-permission permission-{{ relation.forward.status }}">{{ relation.forward.label }}</span></div>
+              <p class="topology-path">{{ topology.selected.name }} → {% if topology.selected.kind != 'hub' and relation.node.kind != 'hub' %}VPS → {% endif %}{{ relation.node.name }}</p>
+              <p class="topology-relation-summary">{{ relation.forward.summary }}</p>
+              {% if relation.forward.scopes %}<ul class="topology-scopes" aria-label="配置范围">{% for scope in relation.forward.scopes %}<li>{{ scope }}</li>{% endfor %}</ul>{% endif %}
+              {% for warning in relation.forward.warnings %}<p class="topology-relation-warning">{{ warning }}</p>{% endfor %}
+            </li>
+            {% empty %}<li class="topology-relations-empty">尚无其他节点。添加节点后将在此显示访问关系。</li>{% endfor %}
+          </ul>
+        </section>
+        <section class="topology-direction" aria-labelledby="topology-inbound-heading"><div class="topology-direction-heading"><span aria-hidden="true">↙</span><div><h3 id="topology-inbound-heading">可访问我</h3><p>从其他节点发起连接</p></div></div>
+          <ul class="topology-relations" data-topology-inbound>
+            {% for relation in topology.relations %}
+            <li class="topology-relation" data-relation-status="{{ relation.reverse.status }}">
+              <div class="topology-relation-heading"><strong>{{ relation.node.name }}</strong><span class="topology-permission permission-{{ relation.reverse.status }}">{{ relation.reverse.label }}</span></div>
+              <p class="topology-path">{{ relation.node.name }} → {% if topology.selected.kind != 'hub' and relation.node.kind != 'hub' %}VPS → {% endif %}{{ topology.selected.name }}</p>
+              <p class="topology-relation-summary">{{ relation.reverse.summary }}</p>
+              {% if relation.reverse.scopes %}<ul class="topology-scopes" aria-label="配置范围">{% for scope in relation.reverse.scopes %}<li>{{ scope }}</li>{% endfor %}</ul>{% endif %}
+              {% for warning in relation.reverse.warnings %}<p class="topology-relation-warning">{{ warning }}</p>{% endfor %}
+            </li>
+            {% empty %}<li class="topology-relations-empty">尚无其他节点。添加节点后将在此显示访问关系。</li>{% endfor %}
+          </ul>
+        </section>
+      </div>
+    </section>
+    {{ topology|json_script:"topology-data" }}
+    {% endif %}
+  </main>
+</div>
+{% endblock %}

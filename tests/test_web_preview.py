@@ -219,6 +219,8 @@ class WebPreviewTests(unittest.TestCase):
 
     def test_pending_scenario_has_distinct_rollback_states(self):
         data = build_fixtures("pending")
+        self.assertTrue(data["network"]["pending_access"])
+        self.assertTrue(data["network"]["pending_vless"])
         self.assertEqual(data["endpoint_transaction"]["state"], "pending")
         self.assertEqual(data["transactions"]["firewall"]["state"], "pending")
         self.assertEqual(data["restore"]["state"], "pending")

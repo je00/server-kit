@@ -19,7 +19,7 @@ CONFIRMS = {
     "backup": "backup_delete_confirm", "security": "security_transaction_confirm",
     "legacy-network": "network_confirm", "legacy-ssh": "ssh_key_confirm", "legacy-file": "file_delete_confirm",
 }
-PAGES = ["/", "/network/nodes/", "/network/subscriptions/", "/network/proxy/", "/files/",
+PAGES = ["/", "/network/nodes/", "/network/topology/", "/network/subscriptions/", "/network/proxy/", "/files/",
          "/guides/nodes/", "/deploy/", "/audit/", "/accounts/", "/backups/", "/security/transactions/"]
 PAGES += [f"/services/{key}/" for key in SERVICE_IDS]
 PAGES += [f"/tasks/{task_id}/" for task_id in TASK_IDS.values()]

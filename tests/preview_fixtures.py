@@ -54,7 +54,7 @@ def build_fixtures(scenario: str = "rich") -> dict:
     for index, name in enumerate(names):
         awg = index < 3
         node = {"name": name, "kind": "awg" if awg else "vless", "kind_label": "AmneziaWG" if awg else "VLESS",
-                "address": f"10.20.0.{index + 10}" if awg else "—", "state": "已停用" if index == 4 else "已启用",
+                "address": f"10.20.0.{index + 10}" if awg else "—", "state": "已禁用" if index == 4 else "已启用",
                 "published": index < 3, "publication_state": "已发布" if index < 3 else "待同步",
                 "detail": "普通双向节点" if awg else "单向访问节点 · 2 条内网授权", "protected": index == 0,
                 "access_mode": "unrestricted" if index == 0 else "restricted", "custody": "client", "public_key_fingerprint": "0123456789abcdef",
@@ -102,6 +102,7 @@ def build_fixtures(scenario: str = "rich") -> dict:
     restore = {"schema_version": 1, "state": "idle", "backup_id": "", "expires_at": "", "remaining_seconds": 0, "rollback_seconds": 300, "changed_count": 0, "categories": [], "verifications": [], "writes_enabled": True, "last_outcome": ""}
     endpoint_transaction = {"state": "idle", "remaining_seconds": 0, "rollback_seconds": 300, "independent_session": True, "last_outcome": ""}
     if scenario == "pending":
+        network.update(pending_access=True, pending_vless=True)
         transactions["firewall"].update(state="pending", remaining_seconds=240)
         endpoint_transaction.update(state="pending", remaining_seconds=240)
         restore.update(state="pending", remaining_seconds=240, backup_id=backups["items"][0]["backup_id"], changed_count=3, categories=["server-kit"], verifications=["请使用另一条连接核验内网"])

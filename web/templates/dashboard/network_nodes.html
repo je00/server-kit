@@ -3,6 +3,7 @@
 
 {% block title %}内网节点 · server-kit{% endblock %}
 {% block extra_head %}
+<link rel="stylesheet" href="{% static 'topology.css' %}">
 <script src="{% static 'awg.js' %}" defer></script>
 <script src="{% static 'qrcode.js' %}" defer></script>
 <script src="{% static 'permissions.js' %}" defer></script>
@@ -18,6 +19,7 @@
       <div><p class="eyebrow">设备与访问控制</p><h1>内网节点</h1><p class="muted">一台设备一个节点。展开节点即可管理访问权限、出口和订阅。</p></div>
       <div class="header-actions"><a class="secondary-button compact-button" href="{% url 'node-deployment-guide' %}">接入指引</a><a class="secondary-button compact-button" href="{% url 'service-detail' 'amneziawg' %}#managed-ports" aria-label="维护 AWG 备用入口">备用入口</a><span class="stage-badge">{% if network_snapshot_error %}节点数量未知{% else %}{{ network.nodes|length }} 个节点{% endif %}</span></div>
     </header>
+    {% include "dashboard/_node_view_tabs.html" with active_node_view="nodes" %}
     {% include "dashboard/_messages.html" %}
     {% if snapshot_error and not network_snapshot_error %}<div class="alert neutral" role="status">{{ snapshot_error }}</div>{% endif %}
     {% if network_snapshot_error %}<div class="alert danger" role="alert">{{ snapshot_error }}</div><section class="empty-state"><h2>无法加载当前状态</h2><p>暂不显示资源数量和变更操作；已有服务不受此页面读取失败影响。</p><a class="secondary-button" href="{% url 'network-nodes' %}">重新加载</a></section>{% else %}

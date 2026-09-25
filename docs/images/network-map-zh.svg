@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="724" viewBox="0 0 640 724" role="img" aria-labelledby="title desc">
+  <title id="title">一台 VPS，连接自己的设备</title>
+  <desc id="desc">AWG：电脑或服务器与 VPS、内网设备双向互通，首次握手确认后默认全内网互通。VLESS：手机经 VPS 单向访问授权目标，默认无内网权限。权限按目标、TCP 或 UDP、端口范围控制，可一次添加多条。基础 AWG 不需要机场或额外出口。</desc>
+  <defs>
+    <style>text{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans CJK SC","Microsoft YaHei",sans-serif;font-size:26px;fill:#193e3b}.title{font-size:32px;font-weight:700}.heading{font-weight:700}.muted{fill:#526963}.node{fill:#fff;stroke:#cbd9ce;stroke-width:2}.line{fill:none;stroke:#197759;stroke-width:3;stroke-linecap:round}</style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1 9 5 1 9" fill="none" stroke="#197759" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker>
+  </defs>
+  <rect width="640" height="724" rx="20" fill="#f5f4ee"/>
+  <text class="title" x="24" y="49">一台 VPS，连接自己的设备</text>
+  <rect x="24" y="82" width="592" height="240" rx="16" fill="#e7f4eb"/>
+  <text class="heading" x="44" y="121">AWG</text>
+  <text x="150" y="121">双向互联</text>
+  <rect class="node" x="44" y="148" width="174" height="80" rx="10"/>
+  <text text-anchor="middle" x="131" y="197">电脑 / 服务器</text>
+  <path class="line" d="M229 188 H266" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <rect class="node" x="278" y="148" width="92" height="80" rx="10"/>
+  <text class="heading" text-anchor="middle" x="324" y="197">VPS</text>
+  <path class="line" d="M382 188 H418" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <rect class="node" x="430" y="148" width="166" height="80" rx="10"/>
+  <text text-anchor="middle" x="513" y="197">内网设备</text>
+  <text x="44" y="261">首次握手确认后</text>
+  <text x="44" y="297">默认全内网互通</text>
+  <rect x="24" y="338" width="592" height="200" rx="16" fill="#fff" stroke="#dbe3da" stroke-width="2"/>
+  <text class="heading" x="44" y="377">VLESS</text>
+  <text x="150" y="377">单向访问</text>
+  <rect class="node" x="44" y="404" width="174" height="80" rx="10"/>
+  <text text-anchor="middle" x="131" y="453">手机</text>
+  <path class="line" d="M229 444 H266" marker-end="url(#arrow)"/>
+  <rect class="node" x="278" y="404" width="92" height="80" rx="10"/>
+  <text class="heading" text-anchor="middle" x="324" y="453">VPS</text>
+  <path class="line" d="M382 444 H418" marker-end="url(#arrow)"/>
+  <rect class="node" x="430" y="404" width="166" height="80" rx="10"/>
+  <text text-anchor="middle" x="513" y="453">授权目标</text>
+  <circle cx="51" cy="511" r="5" fill="#a65a14"/>
+  <text x="68" y="520">默认无内网权限</text>
+  <text class="heading" x="44" y="589">按目标 · TCP / UDP · 端口范围授权</text>
+  <text class="muted" x="44" y="627">多条规则一起添加</text>
+  <path d="M44 649 H596" stroke="#dbe3da" stroke-width="2"/>
+  <text x="44" y="691">基础 AWG：无需机场 / 额外出口</text>
+</svg>

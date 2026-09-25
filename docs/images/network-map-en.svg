@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="724" viewBox="0 0 640 724" role="img" aria-labelledby="title desc">
+  <title id="title">One VPS. Your devices, connected.</title>
+  <desc id="desc">AWG connects computers and servers to LAN devices through the VPS in both directions. After the first handshake is confirmed, full LAN access is allowed by default. VLESS lets a phone reach allowed targets through the VPS in one direction; no LAN access is allowed by default. Set access by target, TCP or UDP, and port range. Add multiple rules together. Basic AWG needs no proxy provider or extra exit.</desc>
+  <defs>
+    <style>text{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:26px;fill:#193e3b}.title{font-size:32px;font-weight:700}.heading{font-weight:700}.muted{fill:#526963}.node{fill:#fff;stroke:#cbd9ce;stroke-width:2}.line{fill:none;stroke:#197759;stroke-width:3;stroke-linecap:round}</style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1 9 5 1 9" fill="none" stroke="#197759" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker>
+  </defs>
+  <rect width="640" height="724" rx="20" fill="#f5f4ee"/>
+  <text class="title" x="24" y="49">One VPS. Your devices, connected.</text>
+  <rect x="24" y="82" width="592" height="240" rx="16" fill="#e7f4eb"/>
+  <text class="heading" x="44" y="121">AWG</text>
+  <text x="150" y="121">Two-way access</text>
+  <rect class="node" x="44" y="148" width="174" height="80" rx="10"/>
+  <text text-anchor="middle" x="131" y="179">Computer</text>
+  <text text-anchor="middle" x="131" y="211">or server</text>
+  <path class="line" d="M229 188 H266" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <rect class="node" x="278" y="148" width="92" height="80" rx="10"/>
+  <text class="heading" text-anchor="middle" x="324" y="197">VPS</text>
+  <path class="line" d="M382 188 H418" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <rect class="node" x="430" y="148" width="166" height="80" rx="10"/>
+  <text text-anchor="middle" x="513" y="179">LAN</text>
+  <text text-anchor="middle" x="513" y="211">devices</text>
+  <text x="44" y="261">First handshake confirmed</text>
+  <text x="44" y="297">Default: full LAN access</text>
+  <rect x="24" y="338" width="592" height="200" rx="16" fill="#fff" stroke="#dbe3da" stroke-width="2"/>
+  <text class="heading" x="44" y="377">VLESS</text>
+  <text x="150" y="377">One-way access</text>
+  <rect class="node" x="44" y="404" width="174" height="80" rx="10"/>
+  <text text-anchor="middle" x="131" y="453">Phone</text>
+  <path class="line" d="M229 444 H266" marker-end="url(#arrow)"/>
+  <rect class="node" x="278" y="404" width="92" height="80" rx="10"/>
+  <text class="heading" text-anchor="middle" x="324" y="453">VPS</text>
+  <path class="line" d="M382 444 H418" marker-end="url(#arrow)"/>
+  <rect class="node" x="430" y="404" width="166" height="80" rx="10"/>
+  <text text-anchor="middle" x="513" y="435">Allowed</text>
+  <text text-anchor="middle" x="513" y="467">targets</text>
+  <circle cx="51" cy="511" r="5" fill="#a65a14"/>
+  <text x="68" y="520">Default: no LAN access</text>
+  <text class="heading" x="44" y="589">By target · TCP / UDP · port range</text>
+  <text class="muted" x="44" y="627">Add multiple rules together</text>
+  <path d="M44 649 H596" stroke="#dbe3da" stroke-width="2"/>
+  <text x="44" y="691">Basic AWG: no proxy provider or extra exit.</text>
+</svg>

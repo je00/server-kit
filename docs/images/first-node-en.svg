@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="1160" viewBox="0 0 640 1160" role="img" aria-labelledby="title desc">
+  <title id="title">Your first AWG device</title>
+  <desc id="desc">Install an AWG-compatible client first. In LAN nodes, add a normal AWG node. Generate configs in your browser. Save and import both main and backup configs into the client, but use only one at a time. The VPS does not store the client private key; a lost key cannot be recovered. Preview and confirm registration, then connect and finish the first handshake within five minutes. On success, the node becomes Enabled. Set it as the management entry, open 10.20.0.1:9080 over AWG, and only close the SSH tunnel after verifying access. On timeout only, the node is removed automatically and must be registered again.</desc>
+  <defs>
+    <style>text{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:26px;fill:#193e3b}.title{font-size:32px;font-weight:700}.heading{font-weight:700}.muted{fill:#526963}.step{fill:#fff;stroke:#dbe3da;stroke-width:2}.line{fill:none;stroke:#197759;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.retry{fill:none;stroke:#a65a14;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.number{fill:#197759;font-weight:700}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}</style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1 9 5 1 9" fill="none" stroke="#197759" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="retry-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1 9 5 1 9" fill="none" stroke="#a65a14" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker>
+  </defs>
+  <rect width="640" height="1160" rx="20" fill="#f5f4ee"/>
+  <text class="title" x="32" y="49">Your first AWG device</text>
+  <rect class="step" x="32" y="82" width="548" height="84" rx="12"/>
+  <text class="number" x="52" y="134">1</text>
+  <text class="heading" x="96" y="134">Install an AWG-compatible client</text>
+  <path class="line" d="M306 168 V190" marker-end="url(#arrow)"/>
+  <rect class="step" x="32" y="194" width="548" height="84" rx="12"/>
+  <text class="number" x="52" y="244">2</text>
+  <text class="heading" x="96" y="230">LAN nodes → Add node</text>
+  <text x="96" y="263">Choose a normal AWG node</text>
+  <path class="line" d="M306 280 V300" marker-end="url(#arrow)"/>
+  <rect class="step" x="32" y="304" width="548" height="144" rx="12"/>
+  <text class="number" x="52" y="350">3</text>
+  <text class="heading" x="96" y="342">Generate configs in browser</text>
+  <text x="96" y="374">Save both → import to client</text>
+  <text x="96" y="406">Use main OR backup, never both</text>
+  <text class="muted" x="96" y="437">Private key: no VPS copy / recovery</text>
+  <path class="line" d="M306 450 V470" marker-end="url(#arrow)"/>
+  <rect class="step" x="32" y="474" width="548" height="84" rx="12"/>
+  <text class="number" x="52" y="524">4</text>
+  <text class="heading" x="96" y="510">Preview + confirm registration</text>
+  <text x="96" y="543">The 5-minute clock starts now</text>
+  <path class="line" d="M306 560 V582" marker-end="url(#arrow)"/>
+  <rect x="32" y="586" width="548" height="116" rx="12" fill="#fff0da" stroke="#dbc6a9" stroke-width="2"/>
+  <text class="heading" text-anchor="middle" x="306" y="633">Connect within 5 minutes</text>
+  <text text-anchor="middle" x="306" y="674">First handshake complete?</text>
+  <path class="line" d="M306 704 V724 H200 V764" marker-end="url(#arrow)"/>
+  <path class="retry" d="M306 724 H490 V764" marker-end="url(#retry-arrow)"/>
+  <text class="heading" x="120" y="753">Yes</text>
+  <text x="500" y="753" fill="#a65a14">Timeout</text>
+  <rect x="32" y="768" width="336" height="102" rx="12" fill="#e7f4eb" stroke="#cbd9ce" stroke-width="2"/>
+  <text class="heading" text-anchor="middle" x="200" y="799">Enabled</text>
+  <text text-anchor="middle" x="200" y="830">Set as management</text>
+  <text text-anchor="middle" x="200" y="860">entry</text>
+  <rect x="400" y="768" width="180" height="144" rx="12" fill="#fff0da" stroke="#dbc6a9" stroke-width="2"/>
+  <text text-anchor="middle" x="490" y="804">Auto-remove</text>
+  <text text-anchor="middle" x="490" y="848">Register</text>
+  <text text-anchor="middle" x="490" y="883">again</text>
+  <path class="retry" d="M582 830 H610 V516 H584" marker-end="url(#retry-arrow)"/>
+  <path class="line" d="M200 872 V894" marker-end="url(#arrow)"/>
+  <rect class="step" x="32" y="898" width="336" height="104" rx="12"/>
+  <text text-anchor="middle" x="200" y="939">Open over AWG</text>
+  <text class="mono" text-anchor="middle" x="200" y="979">10.20.0.1:9080</text>
+  <path class="line" d="M200 1004 V1026" marker-end="url(#arrow)"/>
+  <rect x="32" y="1030" width="336" height="104" rx="12" fill="#e7f4eb" stroke="#cbd9ce" stroke-width="2"/>
+  <text class="heading" text-anchor="middle" x="200" y="1071">Check access first</text>
+  <text text-anchor="middle" x="200" y="1111">Then close SSH tunnel</text>
+</svg>

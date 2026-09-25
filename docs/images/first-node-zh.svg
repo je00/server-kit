@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="1160" viewBox="0 0 640 1160" role="img" aria-labelledby="title desc">
+  <title id="title">第一台 AWG 内网设备</title>
+  <desc id="desc">先安装兼容 AWG 的客户端。进入内网节点，新增普通 AWG 节点。浏览器生成配置，保存主备两份并导入客户端，只启用一个入口；VPS 不保存客户端私钥，丢失无法找回。预览并确认登记后，在五分钟内连接并完成首次握手。成功后状态为已启用，设为管理入口，经 AWG 打开 10.20.0.1:9080，验证可用后才关闭 SSH 转发。只有超时分支会自动撤销节点并返回登记步骤。</desc>
+  <defs>
+    <style>text{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans CJK SC","Microsoft YaHei",sans-serif;font-size:26px;fill:#193e3b}.title{font-size:32px;font-weight:700}.heading{font-weight:700}.muted{fill:#526963}.step{fill:#fff;stroke:#dbe3da;stroke-width:2}.line{fill:none;stroke:#197759;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.retry{fill:none;stroke:#a65a14;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.number{fill:#197759;font-weight:700}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}</style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1 9 5 1 9" fill="none" stroke="#197759" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="retry-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1 9 5 1 9" fill="none" stroke="#a65a14" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker>
+  </defs>
+  <rect width="640" height="1160" rx="20" fill="#f5f4ee"/>
+  <text class="title" x="32" y="49">第一台 AWG 内网设备</text>
+  <rect class="step" x="32" y="82" width="548" height="84" rx="12"/>
+  <text class="number" x="52" y="134">1</text>
+  <text class="heading" x="96" y="134">先安装兼容 AWG 客户端</text>
+  <path class="line" d="M306 168 V190" marker-end="url(#arrow)"/>
+  <rect class="step" x="32" y="194" width="548" height="84" rx="12"/>
+  <text class="number" x="52" y="244">2</text>
+  <text class="heading" x="96" y="230">内网节点 → 新增节点</text>
+  <text x="96" y="263">选择普通 AWG 节点</text>
+  <path class="line" d="M306 280 V300" marker-end="url(#arrow)"/>
+  <rect class="step" x="32" y="304" width="548" height="144" rx="12"/>
+  <text class="number" x="52" y="350">3</text>
+  <text class="heading" x="96" y="342">浏览器生成配置</text>
+  <text x="96" y="374">主、备都保存 → 导入客户端</text>
+  <text x="96" y="406">只启用一个入口</text>
+  <text class="muted" x="96" y="437">VPS 不存私钥 · 丢失无法找回</text>
+  <path class="line" d="M306 450 V470" marker-end="url(#arrow)"/>
+  <rect class="step" x="32" y="474" width="548" height="84" rx="12"/>
+  <text class="number" x="52" y="524">4</text>
+  <text class="heading" x="96" y="510">预览并确认登记</text>
+  <text x="96" y="543">从此刻起计时</text>
+  <path class="line" d="M306 560 V582" marker-end="url(#arrow)"/>
+  <rect x="32" y="586" width="548" height="116" rx="12" fill="#fff0da" stroke="#dbc6a9" stroke-width="2"/>
+  <text class="heading" text-anchor="middle" x="306" y="633">5 分钟内连接</text>
+  <text text-anchor="middle" x="306" y="674">完成首次握手？</text>
+  <path class="line" d="M306 704 V724 H200 V764" marker-end="url(#arrow)"/>
+  <path class="retry" d="M306 724 H490 V764" marker-end="url(#retry-arrow)"/>
+  <text class="heading" x="105" y="753">成功</text>
+  <text x="512" y="753" fill="#a65a14">超时</text>
+  <rect x="32" y="768" width="336" height="102" rx="12" fill="#e7f4eb" stroke="#cbd9ce" stroke-width="2"/>
+  <text class="heading" text-anchor="middle" x="200" y="808">已启用</text>
+  <text text-anchor="middle" x="200" y="847">设为管理入口</text>
+  <rect x="400" y="768" width="180" height="124" rx="12" fill="#fff0da" stroke="#dbc6a9" stroke-width="2"/>
+  <text text-anchor="middle" x="490" y="811">自动撤销</text>
+  <text text-anchor="middle" x="490" y="854">重新登记</text>
+  <path class="retry" d="M582 830 H610 V516 H584" marker-end="url(#retry-arrow)"/>
+  <path class="line" d="M200 872 V894" marker-end="url(#arrow)"/>
+  <rect class="step" x="32" y="898" width="336" height="104" rx="12"/>
+  <text text-anchor="middle" x="200" y="939">经 AWG 打开</text>
+  <text class="mono" text-anchor="middle" x="200" y="979">10.20.0.1:9080</text>
+  <path class="line" d="M200 1004 V1026" marker-end="url(#arrow)"/>
+  <rect x="32" y="1030" width="336" height="104" rx="12" fill="#e7f4eb" stroke="#cbd9ce" stroke-width="2"/>
+  <text class="heading" text-anchor="middle" x="200" y="1071">验证可用后</text>
+  <text text-anchor="middle" x="200" y="1111">才关闭 SSH 转发</text>
+</svg>

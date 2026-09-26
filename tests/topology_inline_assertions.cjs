@@ -9,10 +9,12 @@ async function inlineSnapshot(page) {
     const visible = node => Boolean(node && node.getClientRects().length && getComputedStyle(node).display !== "none" && getComputedStyle(node).visibility !== "hidden" && !node.closest("[hidden]"));
     return {box: rect(graph), floating: graph.querySelectorAll("[data-topology-edge-label], .topology-edge-label").length,
       nodes: [...graph.querySelectorAll("[data-topology-node]")].map(node => {
-        const ports = node.querySelector("[data-topology-node-ports]"), marker = node.querySelector(".topology-node-selected"), more = node.querySelector(".topology-node-ports-more");
+        const ports = node.querySelector("[data-topology-node-ports]"), marker = node.querySelector(".topology-node-selected"), more = node.querySelector(".topology-node-ports-more"), rates = node.querySelector(".topology-node-rates");
         return {id: node.dataset.topologyNode, selected: node.getAttribute("aria-pressed") === "true", box: rect(node), aria: node.getAttribute("aria-label") || "",
           name: rect(node.querySelector("strong")), state: rect(node.querySelector(".topology-node-state")),
           marker: {visible: visible(marker), text: marker?.textContent, box: marker ? rect(marker) : null},
+          rates: {exists: Boolean(rates), visible: visible(rates), text: rates?.textContent || "", box: rates ? rect(rates) : null,
+            font: rates ? parseFloat(getComputedStyle(rates).fontSize) : null, clipped: rates ? rates.scrollWidth > rates.clientWidth + 1 : false},
           ports: {exists: Boolean(ports), visible: visible(ports), title: ports?.getAttribute("title") || "", box: ports ? rect(ports) : null,
             lines: [...node.querySelectorAll(".topology-node-port")].map(line => ({text: line.textContent, scope: line.dataset.topologyScope,
               title: line.getAttribute("title"), visible: visible(line), box: rect(line), font: parseFloat(getComputedStyle(line).fontSize),
@@ -34,11 +36,18 @@ function geometryFindings(snapshot, fit = true) {
       if (outside(node.marker.box, node.box)) findings.push({kind: "current-outside-own-card", node: node.id});
       for (const [kind, box] of [["name", node.name], ["state", node.state]]) if (overlaps(node.marker.box, box)) findings.push({kind: "current-covers-" + kind, node: node.id});
     }
+    if (node.rates.visible) {
+      if (outside(node.rates.box, node.box)) findings.push({kind: "rates-outside-own-card", node: node.id});
+      for (const [kind, box] of [["name", node.name], ["state", node.state], ...(node.marker.visible ? [["current", node.marker.box]] : [])]) {
+        if (overlaps(node.rates.box, box)) findings.push({kind: "rates-cover-" + kind, node: node.id});
+      }
+      if (node.rates.clipped) findings.push({kind: "rates-clipped", node: node.id, text: node.rates.text});
+    }
     const items = node.ports.lines.filter(line => line.visible).map(line => ({kind: "scope", ...line}));
     if (node.ports.more.visible) items.push({kind: "more", ...node.ports.more});
     for (const [lineIndex, line] of items.entries()) {
       if (outside(line.box, node.box)) findings.push({kind: "port-outside-own-card", node: node.id, text: line.text});
-      for (const [kind, box] of [["name", node.name], ["state", node.state], ...(node.marker.visible ? [["current", node.marker.box]] : [])]) {
+      for (const [kind, box] of [["name", node.name], ["state", node.state], ...(node.marker.visible ? [["current", node.marker.box]] : []), ...(node.rates.visible ? [["rates", node.rates.box]] : [])]) {
         if (overlaps(line.box, box)) findings.push({kind: "port-covers-" + kind, node: node.id, text: line.text});
       }
       for (const other of items.slice(lineIndex + 1)) if (overlaps(line.box, other.box)) findings.push({kind: "port-rows-overlap", node: node.id});
@@ -50,7 +59,11 @@ function geometryFindings(snapshot, fit = true) {
 function assertCompactCards(snapshot) {
   for (const node of snapshot.nodes) {
     const count = node.ports.lines.length, more = node.ports.more.visible;
-    const [minimum, maximum] = more ? [92, 102] : count === 2 ? [78, 92] : count === 1 ? [64, 78] : [48, 60];
+    const extra = node.id === "hub" ? 0 : 16;
+    const [minimum, maximum] = (more ? [92, 102] : count === 2 ? [78, 92] : count === 1 ? [64, 78] : [48, 60]).map(value => value + extra);
+    assert.equal(node.rates.exists, node.id !== "hub", "only real nodes have a node ↔ VPS rate row, never a misleading hub sum");
+    assert.equal(node.rates.visible, node.id !== "hub", "every real node retains its dedicated compact rate row");
+    if (node.rates.visible) assert.ok(node.rates.font >= 11, "rates remain readable instead of shrinking to fit");
     assert.ok(node.box.height >= minimum && node.box.height <= maximum,
       `${node.id}: ${count} inline rows${more ? " plus extra count" : ""} use compact content height (${node.box.height}px, expected ${minimum}–${maximum})`);
   }

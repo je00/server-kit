@@ -8,13 +8,14 @@
 <script src="{% static 'qrcode.js' %}" defer></script>
 <script src="{% static 'permissions.js' %}" defer></script>
 <script src="{% static 'inline_tasks.js' %}" defer></script>
+<script src="{% static 'node_telemetry.js' %}" defer></script>
 {% endblock %}
 
 {% block body %}
 {% include "dashboard/_inline_task_modal.html" %}
 <div class="app-shell">
   {% include "dashboard/_navigation.html" %}
-  <main id="main-content" tabindex="-1" class="content detail-content">
+  <main id="main-content" tabindex="-1" class="content detail-content" data-telemetry-url="{% url 'network-telemetry' %}">
     <header class="page-header">
       <div><p class="eyebrow">设备与访问控制</p><h1>内网节点</h1><p class="muted">一台设备一个节点。展开节点即可管理访问权限、出口和订阅。</p></div>
       <div class="header-actions"><a class="secondary-button compact-button" href="{% url 'node-deployment-guide' %}">接入指引</a><a class="secondary-button compact-button" href="{% url 'service-detail' 'amneziawg' %}#managed-ports" aria-label="维护 AWG 备用入口">备用入口</a><span class="stage-badge">{% if network_snapshot_error %}节点数量未知{% else %}{{ network.nodes|length }} 个节点{% endif %}</span></div>
@@ -68,11 +69,12 @@
 
     <section class="inventory-panel node-inventory" data-list-filter data-inline-ready="nodes">
       <div class="section-heading"><div><p class="eyebrow">设备清单</p><h2>现有节点</h2></div><label class="list-filter"><span class="sr-only">搜索节点名称、地址或类型</span><input type="search" data-filter-input placeholder="搜索节点、地址或类型" autocomplete="off"></label></div>
+      <p class="node-telemetry-note"><span data-telemetry-update>正在采样…</span> · ↑ 节点发往 VPS · ↓ 从 VPS 接收，含内外网流量。近期握手不代表实时连通；VLESS 未开启统计时显示 —。</p>
       <div class="inventory-list network-list">
         {% for node in network.nodes %}
-        <details class="network-node-card node-config-panel" data-filter-item data-filter-label="{{ node.name }} {{ node.detail }} {{ node.kind_label }} {{ node.state }}">
+        <details class="network-node-card node-config-panel" data-filter-item data-filter-label="{{ node.name }} {{ node.detail }} {{ node.kind_label }} {{ node.state }}" data-telemetry-node="{{ node.kind }}:{{ node.name }}">
           <summary class="node-card-summary">
-            <span class="node-main"><span class="node-heading"><strong>{{ node.name }}</strong><span class="node-kind">{{ node.kind_label }}</span>{% if node.protected %}<span class="protected-badge">管理入口</span>{% endif %}</span><small>{{ node.detail }} · {{ node.publication_state }}</small></span>
+            <span class="node-main"><span class="node-heading"><strong>{{ node.name }}</strong><span class="node-kind">{{ node.kind_label }}</span>{% if node.protected %}<span class="protected-badge">管理入口</span>{% endif %}</span><small>{{ node.detail }} · {{ node.publication_state }}</small><span class="node-telemetry-line"><span class="node-telemetry-status" data-telemetry-status><i aria-hidden="true"></i><span data-telemetry-state-label>采样中</span></span><span class="node-telemetry-rates" data-telemetry-rates>↑— ↓—</span></span></span>
             <span class="node-row-tools"><span class="item-state">{{ node.state }}</span><span class="copy-button node-config-trigger">配置</span></span>
           </summary>
           <div class="node-config-body">

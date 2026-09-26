@@ -99,15 +99,17 @@ async function session(browser, width = 390, options = {}) {
   await page.locator('[name="password"]').fill(password);
   await Promise.all([page.waitForURL(base.href), page.locator('button[type="submit"]').click()]);
   assert.equal((await context.request.get(new URL("__preview__/scenario/rich/", base).href)).status(), 200);
-  const navigations = [], requests = [];
+  const navigations = [], requests = [], allRequests = [];
   page.on("request", request => {
-    requests.push({url: request.url(), method: request.method()});
+    const item = {url: request.url(), method: request.method()};
+    allRequests.push(item);
+    if (jsonRoute(new URL(item.url))) requests.push(item);
     if (request.isNavigationRequest() && request.frame() === page.mainFrame()) navigations.push(request.url());
   });
   await page.goto(topologyURL);
   await hook(page, "root").waitFor();
   navigations.length = 0;
-  return {context, page, navigations, requests};
+  return {context, page, navigations, requests, allRequests};
 }
 
 async function screenshot(page, label) {
@@ -140,11 +142,22 @@ async function direction(page, name) {
   await settleGraph(page);
 }
 
-async function selectAndWait(page, id) {
-  if (await hook(page, "select").inputValue() === id) await choose(page, id);
-  else await Promise.all([page.waitForResponse(jsonResponse), choose(page, id)]);
-  await page.waitForFunction(() => !document.querySelector("[data-topology-root]").hasAttribute("aria-busy"));
+async function selectionSettled(page, id) {
+  // A fresh selection can be a local 30-second cache hit. Check the applied
+  // model, not merely the native select value (which changes before a fetch).
+  await page.waitForFunction(id => {
+    const root = document.querySelector("[data-topology-root]");
+    return !root.hasAttribute("aria-busy") && document.querySelector("[data-topology-select]").value === id
+      && root.querySelector('[data-topology-node][aria-pressed="true"]')?.dataset.topologyNode === id
+      && root.querySelector('[data-topology-mode="relations"]').getAttribute("aria-pressed") === "true"
+      && document.querySelector("[data-topology-status]").dataset.state !== "error";
+  }, id);
   await settleGraph(page);
+}
+
+async function selectAndWait(page, id) {
+  await choose(page, id);
+  await selectionSettled(page, id);
 }
 
 async function assertGraph(page, expectedLinks = null) {
@@ -223,7 +236,7 @@ async function assertGraph(page, expectedLinks = null) {
 
 async function assertReadOnly(session) {
   assert.deepEqual(session.navigations, [], "graph interaction must not navigate");
-  assert.ok(session.requests.every(request => request.method === "GET"), "topology only sends read-only GET requests");
+  assert.ok(session.allRequests.every(request => request.method === "GET"), "topology and live telemetry only send read-only GET requests");
   const contents = await hook(session.page, "root").innerHTML();
   assert.doesNotMatch(contents, /synthetic-preview-exit-secret|Preview-only-2026|BEGIN (?:RSA |OPENSSH )?PRIVATE KEY|vless:\/\//);
   const storage = await session.page.evaluate(() => JSON.stringify({local: {...localStorage}, session: {...sessionStorage}}));
@@ -234,8 +247,10 @@ async function viewState(page) {
   return {
     selected: await hook(page, "select").inputValue(),
     options: await hook(page, "select").locator("option").allTextContents(),
-    nodes: await hook(page, "node").allTextContents(),
-    details: await hook(page, "details").textContent(),
+    // Live rate/state text is allowed to update while the configuration model
+    // stays unchanged. Strip only those separately tested telemetry spans.
+    nodes: await hook(page, "node").evaluateAll(nodes => nodes.map(node => { const clone = node.cloneNode(true); clone.querySelectorAll("[data-telemetry-status], [data-telemetry-rates]").forEach(item => item.remove()); return clone.textContent; })),
+    details: await hook(page, "details").evaluate(node => { const clone = node.cloneNode(true); clone.querySelectorAll("[data-telemetry-status], [data-telemetry-rates]").forEach(item => item.remove()); return clone.textContent; }),
     inspector: await hook(page, "inspector").textContent(),
     mode: await page.locator('[data-topology-mode][aria-pressed="true"]').getAttribute("data-topology-mode"),
     direction: await page.locator('[data-topology-direction][aria-pressed="true"]').getAttribute("data-topology-direction"),
@@ -351,7 +366,7 @@ async function readabilityAudit(browser, label) {
             if (metrics.inlinePortFont !== null) assert.ok(metrics.inlinePortFont >= 12, `${name}: inline protocol/port text must be at least 12px`);
             if (stateName === "overview") {
               assert.equal(metrics.displayedPermissionPaths, 0);
-              assert.ok(metrics.controlsAboveCanvas <= 5, "default overview keeps secondary controls out of the primary toolbar");
+              assert.ok(metrics.controlsAboveCanvas <= (width < 768 ? 6 : 5), "default overview keeps secondary controls closed; touch devices additionally retain the explicit layout-mode escape control");
               if (width <= 390) assert.ok(metrics.canvasTopAtPageStart < 700, "mobile overview exposes the canvas in the first viewport");
             } else {
               const scopeMetrics = await page.locator(".topology-access-scopes li").evaluateAll(items => items.map(item => ({font: parseFloat(getComputedStyle(item).fontSize), overflow: item.scrollWidth > item.clientWidth + 1})));
@@ -615,8 +630,8 @@ async function touchScrollNavigation(browser, label) {
     await assertReadingSwipe(false);
     await assertReadingSwipe(true);
     const targetId = await hook(page, "node").evaluateAll(nodes => nodes.find(node => node.getAttribute("aria-pressed") !== "true").dataset.topologyNode);
-    await Promise.all([page.waitForResponse(jsonResponse), page.locator(`[data-topology-node="${targetId}"]`).tap()]);
-    await page.waitForFunction(id => document.querySelector("[data-topology-select]").value === id, targetId);
+    await page.locator(`[data-topology-node="${targetId}"]`).tap();
+    await selectionSettled(page, targetId);
     await settleGraph(page);
     assert.equal(await hook(page, "layout-edit").getAttribute("aria-pressed"), "false", "a normal node tap selects without enabling layout changes");
     await setLayoutEditing(page, true);
@@ -661,8 +676,8 @@ async function touchScrollNavigation(browser, label) {
     assert.ok(immediateTap, "mobile graph exposes an unselected card for immediate tap recovery");
     // Reenter/finish without moving the page to start a deterministic guard.
     await hook(page, "layout-edit").evaluate(button => { button.click(); button.click(); });
-    await Promise.all([page.waitForResponse(jsonResponse), page.touchscreen.tap(immediateTap.x, immediateTap.y)]);
-    await page.waitForFunction(id => document.querySelector("[data-topology-select]").value === id, immediateTap.id);
+    await page.touchscreen.tap(immediateTap.x, immediateTap.y);
+    await selectionSettled(page, immediateTap.id);
     await settleGraph(page);
     assert.equal(await hook(page, "layout-edit").getAttribute("aria-pressed"), "false", "the first tap after completing a layout edit selects immediately without reentering layout mode");
     await assertReadingSwipe(false);
@@ -722,8 +737,7 @@ async function directManipulation(browser, label, width, touch = false) {
     await Promise.all([page.waitForResponse(jsonResponse), hook(page, "refresh").click()]);
     await page.waitForFunction(() => !document.querySelector("[data-topology-root]").hasAttribute("aria-busy"));
     assert.deepEqual((await layoutState(page)).positions, moved.positions, "refresh preserves custom node placement");
-    await Promise.all([page.waitForResponse(jsonResponse), choose(page, nodeId)]);
-    await page.waitForFunction(() => !document.querySelector("[data-topology-root]").hasAttribute("aria-busy"));
+    await selectAndWait(page, nodeId);
     assert.deepEqual((await layoutState(page)).positions, moved.positions, "selection preserves custom node placement");
     await hook(page, "graph").scrollIntoViewIfNeeded();
     const background = await hook(page, "graph").evaluate(graph => {
@@ -973,13 +987,13 @@ async function responsiveThemes(browser, label, width) {
       await hook(page, "graph").screenshot({path: path.join(directory, name), style: captureStyle});
       report.screenshots.push(name);
     }
-    assert.match(await hook(page, "root").innerText(), /未检测/);
+    assert.match(await hook(page, "root").innerText(), /权限视图不是连通性测试/, "live handshakes must not imply proven reachability");
     const clients = await hook(page, "node").evaluateAll(items => items.map(node => node.getAttribute("data-topology-node")).filter(id => id !== "hub"));
     assert.ok(clients.length > 1, "rich fixture graph has clients");
     const target = clients.find(id => id.startsWith("vless:")) || clients[1];
     const targetButton = hook(page, "node").filter({hasText: target.split(":").slice(1).join(":")});
-    await Promise.all([page.waitForResponse(jsonResponse), width < 768 ? targetButton.tap() : targetButton.click()]);
-    await page.waitForFunction(id => document.querySelector("[data-topology-select]").value === id, target);
+    await (width < 768 ? targetButton.tap() : targetButton.click());
+    await selectionSettled(page, target);
     assert.match(await hook(page, "details").textContent(), new RegExp(target.split(":").slice(1).join(":")));
     assert.equal(await page.locator('button[data-topology-mode="relations"]').getAttribute("aria-pressed"), "true", "node click enters relationship mode");
     for (const theme of ["dark", "light", "sky"]) {
@@ -1012,25 +1026,28 @@ async function keyboardAndErrors(browser, label) {
     const target = original.nodes.find(node => node.kind === "awg" && node.id !== original.selected_id);
     const button = hook(page, "node").filter({hasText: target.name});
     await button.focus();
-    await Promise.all([page.waitForResponse(jsonResponse), page.keyboard.press("Enter")]);
+    await page.keyboard.press("Enter");
+    await selectionSettled(page, target.id);
     assert.equal(await hook(page, "select").inputValue(), target.id);
     await hook(page, "refresh").focus();
     await Promise.all([page.waitForResponse(jsonResponse), page.keyboard.press("Space")]);
     const select = hook(page, "select");
     await select.focus();
-    await Promise.all([page.waitForResponse(jsonResponse), (async () => {
-      // Native type-ahead works in macOS headless browsers; their OS arrow-key
-      // popup is not controlled by Playwright. "v" uniquely selects VPS here.
-      await page.keyboard.press("v");
-      await page.keyboard.press("Enter");
-    })()]);
+    // Native type-ahead works in macOS headless browsers; their OS arrow-key
+    // popup is not controlled by Playwright. "v" uniquely selects VPS here.
+    await page.keyboard.press("v");
+    await page.keyboard.press("Enter");
+    await selectionSettled(page, "hub");
     assert.equal(await select.inputValue(), "hub", "native selection works from the keyboard");
     const before = await viewState(page);
     await page.route(jsonRoute, route => route.fulfill({status: 503, contentType: "application/json", body: JSON.stringify({code: "snapshot_unavailable", error: "暂时无法读取节点连接关系，请稍后重试。"})}));
     await Promise.all([page.waitForResponse(jsonResponse), hook(page, "refresh").click()]);
     await page.waitForFunction(() => /失败|无法|重试/.test(document.querySelector("[data-topology-status]").textContent));
     assert.deepEqual(await viewState(page), before, "refresh error preserves selection, nodes, options, and details");
-    await Promise.all([page.waitForResponse(jsonResponse), choose(page, target.id)]);
+    const cachedIds = new Set([original.selected_id, target.id, "hub"]);
+    const uncachedTarget = original.nodes.find(node => !cachedIds.has(node.id));
+    assert.ok(uncachedTarget, "failed selection must exercise an actual uncached request");
+    await Promise.all([page.waitForResponse(jsonResponse), choose(page, uncachedTarget.id)]);
     await page.waitForFunction(() => !document.querySelector("[data-topology-refresh]").disabled);
     assert.deepEqual(await viewState(page), before, "failed selection restores the previous selection and complete view");
     await assertGraph(page);

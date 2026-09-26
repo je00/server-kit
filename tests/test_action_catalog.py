@@ -35,6 +35,7 @@ EXPECTED_PROTOCOL_ACTIONS = frozenset({
     "network.address.domains",
     "network.enrollment.context",
     "network.overview",
+    "network.telemetry",
     "network.duckdns.status",
     "network.duckdns.change",
     "network.public_endpoint.status",

@@ -33,8 +33,13 @@ async function select(page, id) {
   if (await hook(page, "select").inputValue() === id) {
     await page.locator('button[data-topology-mode="relations"]').click();
   } else {
-    await Promise.all([page.waitForResponse(response => isJSON(new URL(response.url()))), hook(page, "select").selectOption(id)]);
+    await hook(page, "select").selectOption(id);
   }
+  await page.waitForFunction(id => !document.querySelector("[data-topology-root]").hasAttribute("aria-busy")
+    && document.querySelector("[data-topology-select]").value === id
+    && document.querySelector('[data-topology-node][aria-pressed="true"]')?.dataset.topologyNode === id
+    && document.querySelector('button[data-topology-mode="relations"]').getAttribute("aria-pressed") === "true"
+    && document.querySelector("[data-topology-status]").dataset.state !== "error", id);
   await settle(page);
 }
 
@@ -86,6 +91,7 @@ async function peerStyles(page, engine, width, theme, caseName) {
         selected: node.getAttribute("aria-pressed") === "true", stateColor: getComputedStyle(state).color,
         border: style.borderTopColor, background: style.backgroundColor, effectiveBackground: bg, color: blend(color, bg), width: parseFloat(style.borderTopWidth), height: node.getBoundingClientRect().height,
         portContrasts: [...node.querySelectorAll(".topology-node-port")].map(port => contrast(blend(rgba(getComputedStyle(port).color), bg), bg)),
+        rateContrasts: [...node.querySelectorAll(".topology-node-rates")].map(rate => contrast(blend(rgba(getComputedStyle(rate).color), bg), bg)),
         currentContrast: marker ? contrast(blend(rgba(getComputedStyle(marker).color), markerBackground), markerBackground) : null,
         nameContrast: contrast(blend(rgba(getComputedStyle(name).color), bg), bg), stateContrast: contrast(blend(rgba(getComputedStyle(state).color), bg), bg)};
     });
@@ -95,6 +101,7 @@ async function peerStyles(page, engine, width, theme, caseName) {
     assert.ok(item.nameContrast >= 4.5, `${engine}/${width}/${theme}/${item.id}: name text contrast ${item.nameContrast.toFixed(2)} is readable`);
     assert.ok(item.stateContrast >= 4.5, `${engine}/${width}/${theme}/${item.id}: kind/state text contrast ${item.stateContrast.toFixed(2)} is readable`);
     assert.ok(item.portContrasts.every(value => value >= 4.5), "inline protocol/port text meets normal-text contrast");
+    assert.ok(item.rateContrasts.every(value => value >= 4.5), "the new rate row meets normal-text contrast without masking permission scopes");
     if (item.currentContrast !== null) assert.ok(item.currentContrast >= 4.5, "current-node marker meets normal-text contrast");
     if (item.selected) assert.equal(item.border, item.stateColor, "selected card uses its own type color, not an unrelated warm frame");
     const [red, green, blue] = item.color;
@@ -167,7 +174,7 @@ async function scenario(browser, engine, width) {
   const context = await browser.newContext({viewport: {width, height: width < 768 ? 844 : 1000}, ...(width < 768 ? {isMobile: true, hasTouch: true} : {})});
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
-  const requests = [], navigations = [];
+  const requests = [], allRequests = [], navigations = [];
   let missingContext = false;
   try {
     await context.route("**/*", route => {
@@ -186,10 +193,23 @@ async function scenario(browser, engine, width) {
       const model = missingContext ? packet.missing_context : packet.models[id] || packet.models[packet.initial_selected];
       return route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify(model)});
     });
+    await page.route(url => url.origin === base.origin && url.pathname === "/network/telemetry/", route => {
+      const nodes = packet.models.hub.nodes.filter(node => node.kind !== "hub").map((node, index) => {
+        const state = node.availability === "disabled" ? "disabled" : node.availability === "pending" ? "pending" : node.kind === "vless" ? "unsupported" : "active";
+        const sampled = state === "active";
+        return {id: node.id, state, source: sampled ? "awg" : "none", last_seen_at: sampled ? Math.floor(Date.now() / 1000) - 25 : null,
+          rate_status: sampled ? "ok" : "unavailable", upload_bps: sampled ? (index + 1) * 1024 * 2 : null,
+          download_bps: sampled ? (index + 1) * 1024 * 1024 * 99 : null};
+      });
+      return route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify({schema_version: 1,
+        sampled_at: new Date().toISOString(), refresh_ms: 2000, stale_after_ms: 8000, nodes})});
+    });
     await page.goto(topologyURL);
     await hook(page, "graph").waitFor();
     page.on("request", request => {
-      requests.push({method: request.method(), url: request.url()});
+      const item = {method: request.method(), url: request.url()};
+      allRequests.push(item);
+      if (isJSON(new URL(item.url))) requests.push(item);
       if (request.isNavigationRequest() && request.frame() === page.mainFrame()) navigations.push(request.url());
     });
     await Promise.all([page.waitForResponse(response => isJSON(new URL(response.url()))), hook(page, "refresh").click()]);
@@ -269,6 +289,7 @@ async function scenario(browser, engine, width) {
     await capture(page, `${engine}-${width}-missing-facts.png`);
     assert.deepEqual(navigations, [], "inspecting permissions never navigates away or sends a management operation");
     assert.ok(requests.length > 0 && requests.every(request => request.method === "GET" && isJSON(new URL(request.url))));
+    assert.ok(allRequests.every(request => request.method === "GET" && (isJSON(new URL(request.url)) || new URL(request.url).pathname === "/network/telemetry/")), "configuration and telemetry remain exclusively read-only and no unrelated endpoint is called");
     assert.doesNotMatch(await hook(page, "root").innerHTML(), /synthetic-topology-private-credential-never-render|vless:\/\/|Preview-only-2026/);
     report.requests.push({engine, width, topologyGETs: requests.length});
     report.checks.push(`${engine} ${width}: real backend permissions, exact type-colored peers and current marker, inline protocol/port scopes with no floating labels or card overlap even for dense hub inbound, three themes, direction/overview/selection cleanup, GET-only and no credentials`);

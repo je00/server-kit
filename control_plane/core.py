@@ -147,6 +147,9 @@ class Runner(Protocol):
     def network_overview(self) -> dict[str, Any]:
         """读取脱敏节点与订阅发布状态。"""
 
+    def network_telemetry(self) -> dict[str, Any]:
+        """读取共享采样器的节点状态和速率，不修改主机配置。"""
+
     def public_endpoint_status(self) -> dict[str, Any]:
         """读取稳定公网入口及 DNS 诊断。"""
 
@@ -2816,6 +2819,8 @@ class ControlPlane:
             return self._runner.file_resources()
         if action == "network.overview":
             return self._runner.network_overview()
+        if action == "network.telemetry":
+            return self._runner.network_telemetry()
         if action == "network.public_endpoint.status":
             return self._runner.public_endpoint_status()
         if action == "network.public_endpoint.transaction.status":

@@ -31,6 +31,7 @@ node tests/run_mobile_render_ui.cjs http://127.0.0.1:8765/
 node tests/run_login_ui.cjs http://127.0.0.1:8765/
 node tests/run_exit_edit_ui.cjs http://127.0.0.1:8765/
 node tests/run_topology_ui.cjs http://127.0.0.1:8765/
+node tests/run_telemetry_ui.cjs http://127.0.0.1:8765/
 ```
 
 It signs in with the demo account, captures all 41 routes at 320, 390, 768 and
@@ -62,6 +63,10 @@ inspector. It covers dragging, pan/zoom, search, keyboard selection, and stale
 or failed responses. Realistic 12-node fixtures check readability alongside
 dense-graph performance. Layout changes stay in the browser; no network
 settings are changed. All fixtures are synthetic; enabled is not proven online.
+
+The telemetry audit checks AWG rates, VLESS unavailable labels, expiry,
+single-flight polling, hidden-page suspension and configuration-cache races in
+Chromium and WebKit. Rates are synthetic; no production collector is invoked.
 
 The default rich scenario renders 41 review routes. Use the index to reset or
 switch scenarios; this resets every tab attached to that instance, so use a

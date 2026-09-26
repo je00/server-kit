@@ -9,7 +9,9 @@ import json
 import socket
 import sys
 import threading
+import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -31,6 +33,7 @@ class PreviewAgent:
         with self.lock:
             self.scenario = scenario
             self.data = build_fixtures(scenario)
+            self._telemetry_started = time.monotonic()
             self._permission_batches: dict[str, dict] = {}
             self._inline_changes: dict[str, dict] = {}
 
@@ -48,6 +51,25 @@ class PreviewAgent:
                     "components": [intent], "view": view}
         if action == "system.snapshot":
             return self.data["overview"]
+        if action == "network.telemetry":
+            if params:
+                raise ValueError("实时采样不接受参数。")
+            nodes = []
+            warming = time.monotonic() - self._telemetry_started < 2
+            now = time.time()
+            for index, node in enumerate(self.data["network"]["nodes"]):
+                state = ("disabled" if node["state"] == "已禁用" else
+                         "pending" if node["state"] == "等待首次握手" else
+                         "unsupported" if node["kind"] == "vless" else "active")
+                sampled = state == "active" and not warming
+                nodes.append({"id": f"{node['kind']}:{node['name']}", "state": state,
+                              "source": "awg" if node["kind"] == "awg" else "none",
+                              "last_seen_at": int(now - 25) if state == "active" else None,
+                              "rate_status": "ok" if sampled else "warming_up" if state == "active" else "unavailable",
+                              "upload_bps": (index + 1) * 1024 + int(now / 2) % 8 * 128 if sampled else None,
+                              "download_bps": (index + 1) * 1024 * 96 if sampled else None})
+            return {"schema_version": 1, "sampled_at": datetime.now(timezone.utc).isoformat(),
+                    "refresh_ms": 2000, "stale_after_ms": 8000, "nodes": nodes}
         if action == "service.describe":
             return self.describe(params["service_id"])
         reads = {"network.public_endpoint.status": "endpoint",

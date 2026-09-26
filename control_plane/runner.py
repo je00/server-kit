@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -83,6 +84,8 @@ class ScriptRunner:
         self._executor = executor
         self._high_risk_writes = high_risk_writes
         self._network_writes = network_writes
+        self._telemetry_sampler = None
+        self._telemetry_lock = threading.Lock()
 
     def _environment(self) -> dict[str, str]:
         return {
@@ -346,6 +349,16 @@ class ScriptRunner:
         completed = self._run(["file", "discard-upload", upload_id, "--json"], 30.0)
         if completed.returncode != 0:
             raise RuntimeError("无法清理暂存文件")
+
+    def network_telemetry(self) -> dict[str, Any]:
+        """Read live counters in this process; never run the full inventory script."""
+        with self._telemetry_lock:
+            if self._telemetry_sampler is None:
+                from lib.server_kit_telemetry import NetworkTelemetrySampler
+
+                self._telemetry_sampler = NetworkTelemetrySampler()
+            sampler = self._telemetry_sampler
+        return sampler.read()
 
     def network_overview(self) -> dict[str, Any]:
         completed = self._run(["network", "overview", "--json"], self._timeout)

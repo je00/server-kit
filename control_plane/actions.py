@@ -344,6 +344,9 @@ _single(_definition(
     "network.overview", "network.overview", EMPTY, executor="network_overview",
 ), "network.overview 不接受参数。")
 _single(_definition(
+    "network.telemetry", "network.telemetry", EMPTY, executor="network_telemetry",
+), "network.telemetry 不接受参数。")
+_single(_definition(
     "audit.list", "audit.list", EMPTY, executor="audit_log",
 ), "audit.list 不接受参数。")
 _single(_definition(

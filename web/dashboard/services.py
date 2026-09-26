@@ -119,6 +119,13 @@ def network_overview() -> dict[str, Any]:
     return read_host("network")
 
 
+def network_telemetry() -> dict[str, Any]:
+    """Use the shared lightweight sampler, never the full configuration reader."""
+    return AgentClient(settings.SERVER_KIT_AGENT_SOCKET, timeout=5.0).request(
+        "network.telemetry", {}
+    )
+
+
 def public_endpoint_status() -> dict[str, Any]:
     return AgentClient(settings.SERVER_KIT_AGENT_SOCKET).request("network.public_endpoint.status", {})
 

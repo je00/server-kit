@@ -2,7 +2,7 @@
 
 from django.urls import path
 
-from . import inline_tasks, topology_views, views
+from . import inline_tasks, telemetry_views, topology_views, views
 
 
 urlpatterns = [
@@ -42,6 +42,7 @@ urlpatterns = [
     path("files/<str:resource_id>/<str:resource>/", views.file_resource_secret, name="file-resource-secret"),
     path("network/nodes/", views.network_nodes, name="network-nodes"),
     path("network/topology/", topology_views.node_connections, name="network-topology"),
+    path("network/telemetry/", telemetry_views.node_telemetry, name="network-telemetry"),
     path("network/notices/dismiss/", views.network_notice_dismiss, name="network-notice-dismiss"),
     path("sensitive/unlock/", views.sensitive_unlock, name="sensitive-unlock"),
     path("network/nodes/preview/", views.network_node_preview, name="network-node-preview"),

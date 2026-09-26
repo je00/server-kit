@@ -28,7 +28,7 @@
   let requestedId = null;
   const positions = new Map();
   const nodeMetrics = new Map();
-  let baseNodeSize = {width: 148, height: 56};
+  let baseNodeSize = {width: 148, height: 72};
   const pointers = new Map();
   const view = {x: 0, y: 0, scale: 1, width: 0, height: 0, fitted: true};
   let scene = null;
@@ -44,6 +44,9 @@
   let direction = "forward";
   let layoutEditing = false;
   const dirtyNodes = new Set();
+  const configCache = new Map();
+  const configInterval = 30000;
+  let configTimer = null, configStopped = false;
 
   function stringList(value) { return Array.isArray(value) && value.every(item => typeof item === "string"); }
   function validNode(node) {
@@ -92,6 +95,7 @@
     snapshot = JSON.parse(initial.textContent);
     if (!validSnapshot(snapshot)) return;
   } catch (_) { return; }
+  configCache.set(snapshot.selected_id, {snapshot, at: performance.now()});
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -129,13 +133,22 @@
       icon.setAttribute("aria-hidden", "true");
       inspector.replaceChildren(icon, element("h3", "", "先看结构，再看权限"),
         element("p", "", "所有节点经 VPS 中转。点一个节点，查看它能访问谁、开放哪些端口。"),
-        element("p", "topology-inspector-hint", "虚线仅表示接入配置，在线状态未检测。"));
+        element("p", "topology-inspector-hint", "虚线表示接入配置。↑ 发往 VPS，↓ 从 VPS 接收；近期握手不等于实时连通。"));
       return;
     }
     const allowed = snapshot.relations.filter(relation => ["allowed", "partial"].includes(relation[direction].status));
     const heading = element("div", "topology-inspector-heading");
     heading.append(element("p", "eyebrow", "当前节点"), element("h3", "", selected.name),
       element("p", "", [selected.kind_label, selected.address].filter(Boolean).join(" · ")));
+    if (selected.kind !== "hub") {
+      heading.dataset.telemetryNode = selected.id;
+      const live = element("p", "node-telemetry-line");
+      const state = element("span", "node-telemetry-status"); state.dataset.telemetryStatus = "";
+      const label = element("span", "", "采样中"); label.dataset.telemetryStateLabel = "";
+      const dot = element("i"); dot.setAttribute("aria-hidden", "true"); state.append(dot, label);
+      const rates = element("span", "node-telemetry-rates", "↑— ↓—"); rates.dataset.telemetryRates = "";
+      live.append(state, rates); heading.append(live);
+    }
     const title = element("h4", "", `${direction === "forward" ? "我可访问" : "可访问我"} · ${allowed.length}`);
     const list = element("ul", "topology-access-list");
     allowed.forEach(relation => {
@@ -159,6 +172,7 @@
     });
     inspector.replaceChildren(heading, title, list, full,
       element("p", "topology-inspector-hint", "这里只列配置允许的范围，不代表实时连通。"));
+    root.dispatchEvent(new Event("node-telemetry-bind"));
   }
   function syncModeControls() {
     root.dataset.topologyMode = displayMode;
@@ -174,6 +188,7 @@
     if (mode === "overview" && controller) {
       controller.abort(); generation += 1; controller = null; requestedId = null;
       refresh.disabled = false; root.removeAttribute("aria-busy"); select.value = snapshot.selected_id;
+      scheduleConfig();
     }
     displayMode = mode;
     syncModeControls(); renderGraph();
@@ -242,7 +257,7 @@
     title.id = "topology-selected-heading";
     identity.append(element("p", "eyebrow", "当前观察节点"), title, element("p", "", [selected.kind_label, selected.address].filter(Boolean).join(" · ")));
     const facts = element("dl");
-    const entries = [["配置状态", selected.state || "未知"], ["在线状态", selected.online_label || "未检测"]];
+    const entries = [["配置状态", selected.state || "未知"]];
     if (selected.protected) entries.push(["节点角色", "管理入口"]);
     entries.forEach(([label, value]) => {
       const fact = element("div");
@@ -280,7 +295,7 @@
   function measureNodes() {
     const style = getComputedStyle(graph);
     baseNodeSize = {width: parseFloat(style.getPropertyValue("--topology-node-width")) || 148,
-      height: parseFloat(style.getPropertyValue("--topology-node-height")) || 56};
+      height: parseFloat(style.getPropertyValue("--topology-node-height")) || 72};
     const ids = new Set(snapshot.nodes.map(node => node.id));
     for (const id of nodeMetrics.keys()) if (!ids.has(id)) nodeMetrics.delete(id);
     let changed = false;
@@ -434,10 +449,13 @@
       else delete button.dataset.topologyPeer;
       button.setAttribute("aria-pressed", String(chosen));
       const scopeText = scopes.length ? `。${scopeRole}：${scopes.join("；")}` : "";
-      button.setAttribute("aria-label", `${node.name}，${node.kind_label}，${node.state}，在线未检测，${role}${scopeText}。可拖动调整布局。`);
-      button.title = `${node.name} · ${node.kind_label}${node.address ? ` · ${node.address}` : ""} · ${node.state} · ${role}${scopeText} · 在线未检测`;
+      const accessibility = `${node.name}，${node.kind_label}，${node.state}，${role}${scopeText}。可拖动调整布局。`;
+      button.setAttribute("aria-label", accessibility);
+      button.dataset.telemetryBaseLabel = accessibility;
+      button.title = `${node.name} · ${node.kind_label}${node.address ? ` · ${node.address}` : ""} · ${node.state} · ${role}${scopeText}`;
       button.querySelector("strong").textContent = node.name;
-      button.querySelector(".topology-node-state").textContent = node.kind === "hub" ? "中心网关" : [node.kind.toUpperCase(), node.availability !== "enabled" ? node.state : ""].filter(Boolean).join(" · ");
+      const kind = button.querySelector("[data-topology-node-kind]");
+      kind.textContent = node.kind === "hub" ? "中心网关" : node.kind.toUpperCase();
       button.querySelector(".topology-node-selected").hidden = !chosen || displayMode !== "relations";
       const ports = button.querySelector("[data-topology-node-ports]");
       ports.replaceChildren();
@@ -462,6 +480,7 @@
     const matchLabel = search.value.trim() ? ` · 搜索匹配 ${matched.size} 个` : "";
     root.querySelector("[data-topology-canvas-summary]").textContent = `全部 ${snapshot.nodes.length} 个节点（含 VPS）${displayMode === "relations" ? ` · 当前方向 ${scene.links.length} 条授权` : " · 经 VPS 中转"}${matchLabel}`;
     findNext.disabled = !matched.size;
+    root.dispatchEvent(new Event("node-telemetry-bind"));
     if (measureNodes() && view.width) applyView(true);
   }
   function renderGraph() {
@@ -509,7 +528,15 @@
       const dot = element("span", "topology-node-dot"); dot.setAttribute("aria-hidden", "true");
       const ports = element("span", "topology-node-ports"); ports.dataset.topologyNodePorts = "";
       const selected = element("span", "topology-node-selected", "当前"); selected.setAttribute("aria-hidden", "true");
-      button.append(dot, element("strong", "", node.name), element("span", "topology-node-state"), selected, ports);
+      const state = element("span", "topology-node-state"), kind = element("span"); kind.dataset.topologyNodeKind = ""; state.append(kind);
+      button.append(dot, element("strong", "", node.name), state, selected);
+      if (node.kind !== "hub") {
+        button.dataset.telemetryNode = node.id; button.dataset.telemetryCompact = "true";
+        const activity = element("span", "topology-node-activity"); activity.dataset.telemetryStatus = "";
+        const label = element("span", "", "采样中"); label.dataset.telemetryStateLabel = ""; activity.append(label); state.append(activity);
+        const rates = element("span", "node-telemetry-rates topology-node-rates", "↑— ↓—"); rates.dataset.telemetryRates = ""; button.append(rates);
+      }
+      button.append(ports);
       scene.nodes.set(node.id, button); world.append(button); updateGeometry(node.id);
     }
     graph.replaceChildren(world);
@@ -667,10 +694,30 @@
     const x = position.x * view.scale + view.x, y = position.y * view.scale + view.y;
     if (x < 55 || x > graph.clientWidth - 55 || y < 30 || y > graph.clientHeight - 70) centerNode(id);
   });
-  async function load(id, isRefresh = false) {
-    if (id === snapshot.selected_id && !isRefresh) {
-      if (controller && requestedId !== id) { controller.abort(); generation += 1; controller = null; requestedId = null; refresh.disabled = false; root.removeAttribute("aria-busy"); }
-      select.value = snapshot.selected_id;
+  function scheduleConfig() {
+    clearTimeout(configTimer);
+    if (!configStopped && !document.hidden) configTimer = setTimeout(() => {
+      configTimer = null;
+      if (controller || pointers.size) scheduleConfig();
+      else load(snapshot.selected_id, true, true);
+    }, configInterval);
+  }
+  function applySnapshot(nextSnapshot, isRefresh, cachedAt = performance.now()) {
+    if (JSON.stringify([snapshot.nodes, snapshot.links]) !== JSON.stringify([nextSnapshot.nodes, nextSnapshot.links])) configCache.clear();
+    snapshot = nextSnapshot;
+    configCache.set(snapshot.selected_id, {snapshot, at: cachedAt});
+    if (!isRefresh) displayMode = "relations";
+    renderSelect(); renderDetails(); syncModeControls(); renderGraph();
+    const location = new URL(window.location.href);
+    location.searchParams.set("node", snapshot.selected_id); location.searchParams.delete("format");
+    window.history.replaceState(null, "", location.href);
+  }
+  async function load(id, isRefresh = false, background = false) {
+    const cached = configCache.get(id);
+    if (!isRefresh && cached && performance.now() - cached.at < configInterval) {
+      if (controller && requestedId !== id) { controller.abort(); generation += 1; controller = null; requestedId = null; refresh.disabled = false; root.removeAttribute("aria-busy"); scheduleConfig(); }
+      if (snapshot !== cached.snapshot) applySnapshot(cached.snapshot, false, cached.at);
+      select.value = id;
       displayMode = "relations"; syncModeControls(); renderGraph();
       setStatus(directionHint());
       return;
@@ -687,9 +734,11 @@
       activeController.abort();
     }, 15000);
     requestedId = id;
-    refresh.disabled = true;
-    root.setAttribute("aria-busy", "true");
-    setStatus(isRefresh ? "正在重新读取配置…" : "正在读取所选节点的访问关系…", "loading");
+    if (!background) {
+      refresh.disabled = true;
+      root.setAttribute("aria-busy", "true");
+      setStatus(isRefresh ? "正在重新读取配置…" : "正在读取所选节点的访问关系…", "loading");
+    }
     try {
       const url = new URL(form.action, window.location.href);
       url.searchParams.set("node", id);
@@ -699,17 +748,8 @@
       const nextSnapshot = await response.json();
       if (!validSnapshot(nextSnapshot)) throw new Error("invalid-snapshot");
       if (thisGeneration !== generation || signal.aborted) return;
-      snapshot = nextSnapshot;
-      if (!isRefresh) displayMode = "relations";
-      renderSelect();
-      renderDetails();
-      syncModeControls();
-      renderGraph();
-      const location = new URL(window.location.href);
-      location.searchParams.set("node", snapshot.selected_id);
-      location.searchParams.delete("format");
-      window.history.replaceState(null, "", location.href);
-      setStatus(displayMode === "relations" ? directionHint() : `已读取 ${snapshot.selected.name} 的配置关系。在线状态未检测。`);
+      applySnapshot(nextSnapshot, isRefresh);
+      if (!background || status.dataset.state === "error") setStatus(displayMode === "relations" ? directionHint() : `已读取 ${snapshot.selected.name} 的配置关系。`);
     } catch (error) {
       if (thisGeneration !== generation || (signal.aborted && !timedOut)) return;
       select.value = snapshot.selected_id;
@@ -721,6 +761,7 @@
         requestedId = null;
         refresh.disabled = false;
         root.removeAttribute("aria-busy");
+        scheduleConfig();
       }
     }
   }
@@ -768,6 +809,7 @@
   if ("ResizeObserver" in window) new ResizeObserver(scheduleGraph).observe(graph);
   else window.addEventListener("resize", scheduleGraph);
   window.addEventListener("pagehide", () => {
+    configStopped = true; clearTimeout(configTimer);
     generation += 1;
     if (controller) controller.abort();
     controller = null;
@@ -780,9 +822,20 @@
     select.value = snapshot.selected_id;
     setStatus(displayMode === "relations" ? directionHint() : "全部节点都在图中。点击节点查看端口。");
   });
-  window.addEventListener("pageshow", scheduleGraph);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      clearTimeout(configTimer); generation += 1; controller?.abort(); controller = null; requestedId = null;
+      refresh.disabled = false; root.removeAttribute("aria-busy"); select.value = snapshot.selected_id;
+    } else {
+      const cached = configCache.get(snapshot.selected_id);
+      if (!cached || performance.now() - cached.at >= configInterval) load(snapshot.selected_id, true, true);
+      else scheduleConfig();
+    }
+  });
+  window.addEventListener("pageshow", () => { configStopped = false; scheduleGraph(); scheduleConfig(); });
   renderObservedAt();
   syncModeControls();
   renderGraph();
   scheduleGraph();
+  scheduleConfig();
 })();

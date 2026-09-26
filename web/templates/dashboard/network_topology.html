@@ -5,15 +5,16 @@
 {% block extra_head %}
 <link rel="stylesheet" href="{% static 'topology.css' %}">
 <script src="{% static 'topology.js' %}" defer></script>
+<script src="{% static 'node_telemetry.js' %}" defer></script>
 {% endblock %}
 
 {% block body %}
 <div class="app-shell">
   {% include "dashboard/_navigation.html" %}
-  <main id="main-content" tabindex="-1" class="content detail-content topology-content" data-topology-root>
+  <main id="main-content" tabindex="-1" class="content detail-content topology-content" data-topology-root data-telemetry-url="{% url 'network-telemetry' %}">
     <header class="page-header">
       <div><p class="eyebrow">设备与访问控制</p><h1>节点连接</h1><p class="muted">先看接入结构，选中节点再查看访问端口。</p></div>
-      <span class="stage-badge">配置视图 · 只读</span>
+      <span class="stage-badge">实时状态 · 只读</span>
     </header>
     {% include "dashboard/_node_view_tabs.html" with active_node_view="topology" %}
     {% include "dashboard/_messages.html" %}
@@ -32,7 +33,7 @@
     </section>
 
     <section class="topology-panel" aria-labelledby="topology-graph-heading">
-      <div class="topology-panel-heading"><h2 class="sr-only" id="topology-graph-heading">节点接入与访问权限</h2><div class="topology-snapshot"><span>配置读取</span><time data-topology-observed-at>{{ topology.observed_at }}</time></div></div>
+      <div class="topology-panel-heading"><h2 class="sr-only" id="topology-graph-heading">节点接入与访问权限</h2><span class="node-telemetry-update" data-telemetry-update>正在采样…</span><div class="topology-snapshot"><span>配置读取</span><time data-topology-observed-at>{{ topology.observed_at }}</time></div></div>
       <div class="topology-primary-bar">
         <div class="topology-view-modes" role="group" aria-label="关系图显示模式" data-topology-enhanced-control hidden><button class="secondary-button" type="button" data-topology-mode="overview" aria-pressed="true">星形总览</button><button class="secondary-button" type="button" data-topology-mode="relations" aria-pressed="false">节点关系</button></div>
         <form class="topology-controls" method="get" action="{% url 'network-topology' %}" data-topology-form>
@@ -65,7 +66,7 @@
           <span><i class="topology-legend-node kind-awg" aria-hidden="true"></i>AWG</span><span><i class="topology-legend-node kind-vless" aria-hidden="true"></i>VLESS</span><span><i class="topology-legend-node kind-hub" aria-hidden="true"></i>VPS</span><span><i class="topology-legend-peer" aria-hidden="true"></i>粗框＋端口：当前方向已授权</span>
           <span><i class="topology-legend-line structure-line" aria-hidden="true"></i>经 VPS 接入</span><span><i class="topology-legend-line permission-line" aria-hidden="true"></i>VPS 访问授权</span>
         </div>
-        <p class="topology-graph-note">叶子节点之间不画箭头；外框和端口表示当前方向的授权。“可访问我”显示来源能访问当前节点的范围。完整范围、未知或禁用情况见详情；通信仍经 VPS，在线未检测。</p>
+        <p class="topology-graph-note">↑ 节点发往 VPS · ↓ 从 VPS 接收，单位 B/s（K/M/G 按 1024 进位），含内外网流量。近期握手不代表实时连通；VLESS 未开启统计时不显示速率。外框和端口仍表示配置授权，叶子间不画箭头。</p>
       </div>
       <noscript><p class="topology-noscript">当前未启用 JavaScript，交互图暂不可用。可通过上方选择框切换节点，下方提供完整的访问关系。</p></noscript>
     </section>

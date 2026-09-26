@@ -12,7 +12,7 @@ from lib.server_kit_topology_facts import valid_topology_context
 
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 _STATES = {"已启用": "enabled", "已禁用": "disabled", "等待首次握手": "pending"}
-_NOTE = "基于当前保存的权限配置，不是连通性测试；应答流量不代表允许反向发起连接。在线状态未检测。"
+_NOTE = "权限视图不是连通性测试；应答流量不代表允许反向发起连接。节点活动与速率单独采样，近期握手不等于实时连通。"
 
 
 def _result(status: str, label: str, summary: str, scopes=None, warnings=None) -> dict[str, Any]:

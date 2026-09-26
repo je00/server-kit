@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {chromium, webkit} = require("playwright");
-const {assertInlinePorts, geometryFindings, inlineSnapshot} = require("./topology_inline_assertions.cjs");
+const {assertCardEdges, assertInlinePorts, geometryFindings, inlineSnapshot} = require("./topology_inline_assertions.cjs");
 const base = new URL(process.argv[2] || "http://127.0.0.1:8765/");
 if (base.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(base.hostname)
     || base.username || base.password || base.pathname !== "/") throw new Error("Only an isolated loopback preview is allowed.");
@@ -330,6 +330,7 @@ async function readabilityAudit(browser, label) {
             report.screenshots.push(name);
             assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, "realistic topology never overflows the page horizontally");
             assert.deepEqual(metrics.geometryFindings, [], `${name}: fitted cards never overlap or clip and inline ports remain within their own rows`);
+            await assertCardEdges(page);
             assert.equal(metrics.floatingLabels, 0);
             assert.deepEqual(metrics.namesOverlapping, [], `${name}: node names must not overlap`);
             assert.ok(metrics.nodeNameFont >= 13, `${name}: node names must be at least 13px, not tiny diagram captions`);
@@ -388,6 +389,7 @@ async function inlineScopeScenario(browser, label, width) {
     assert.ok(inline.nodes.some(node => node.ports.more.visible && /另 2 项/.test(node.ports.more.text)), "the additional-scope count is visible inside the card");
     const metrics = await readabilitySnapshot(page);
     assert.deepEqual(metrics.geometryFindings, []);
+    await assertCardEdges(page);
     report.readability.push({browser: label, width, state: "four-inline-scopes", ...metrics});
     await page.evaluate(() => document.activeElement?.blur());
     const name = `${label}-${width}-12-node-four-inline-scopes.png`;
@@ -479,6 +481,7 @@ async function coldMobileLayouts(browser, label) {
 }
 
 async function dragPoint(page, start, end, touch = false) {
+  const draggedId = await page.evaluate(({x, y}) => document.elementFromPoint(x, y)?.closest("[data-topology-node]")?.dataset.topologyNode, start);
   if (touch) {
     const channel = await page.context().newCDPSession(page);
     try {
@@ -487,6 +490,7 @@ async function dragPoint(page, start, end, touch = false) {
         await channel.send("Input.dispatchTouchEvent", {type: "touchMove", touchPoints: [{id: 1,
           x: start.x + (end.x - start.x) * step / 8, y: start.y + (end.y - start.y) * step / 8}]});
       }
+      if (draggedId) assert.equal(await page.locator(`[data-topology-node="${draggedId}"]`).evaluate(node => node.classList.contains("is-dragging")), true, "trusted touch drag raises its active card");
       await channel.send("Input.dispatchTouchEvent", {type: "touchEnd", touchPoints: []});
     } finally { await channel.detach(); }
   } else {
@@ -497,6 +501,7 @@ async function dragPoint(page, start, end, touch = false) {
   }
   await settleGraph(page);
   if (touch) await page.waitForTimeout(100);
+  assert.equal(await hook(page, "graph").locator(".is-dragging").count(), 0, "completed mouse/touch gestures remove their temporary card layer");
 }
 
 async function directManipulation(browser, label, width, touch = false) {
@@ -582,8 +587,11 @@ async function directManipulation(browser, label, width, touch = false) {
     assert.deepEqual((await layoutState(page)).positions, moved.positions, "fit preserves customized layout");
     await direction(page, "reverse");
     await assertGraph(page);
+    await assertCardEdges(page);
     await direction(page, "forward");
     await assertGraph(page);
+    await assertCardEdges(page);
+    assert.deepEqual((await layoutState(page)).positions, moved.positions, "content height changes in either direction preserve dragged world coordinates");
     await screenshot(page, `${label}-${width}-${touch ? "touch" : "mouse"}-dragged`);
     if (!touch) {
       await hook(page, "graph").focus();
@@ -619,6 +627,7 @@ async function directManipulation(browser, label, width, touch = false) {
       assert.equal(resized.viewport.scale, beforeResize.viewport.scale, "responsive sizing preserves the user's zoom");
       assert.notDeepEqual(resized.edges, beforeResize.edges, "responsive card widths redraw edge endpoints even at unchanged zoom");
       await assertGraph(page);
+      await assertCardEdges(page);
       await page.setViewportSize({width, height: 1000});
       await settleGraph(page);
       const restored = await layoutState(page);
@@ -627,6 +636,57 @@ async function directManipulation(browser, label, width, touch = false) {
     }
     await assertReadOnly(state);
     report.checks.push(`${label} ${width}: ${touch ? "trusted touch and pinch" : "mouse, wheel, and keyboard"} node drag/pan, inline-port persistence, zoom/fit/reset, layout persistence, and directional inspection`);
+  } finally { await context.close(); }
+}
+
+async function layerPriority(browser, label) {
+  const state = await session(browser, 1440);
+  const {page, context, requests} = state;
+  try {
+    const model = await (await context.request.get(topologyURL + "?format=json")).json();
+    const selected = model.nodes.find(node => model.links.some(link => link.source === node.id)
+      && model.nodes.some(other => other.id !== node.id && !model.links.some(link => link.source === node.id && link.target === other.id)));
+    assert.ok(selected, "layer fixture includes a selected source, authorized peer, and ordinary node");
+    await selectAndWait(page, selected.id);
+    const peerId = model.links.find(link => link.source === selected.id).target;
+    const ordinary = model.nodes.find(node => node.id !== selected.id && !model.links.some(link => link.source === selected.id && link.target === node.id));
+    const card = id => page.locator(`[data-topology-node="${id}"]`);
+    await hook(page, "fit").click();
+    await hook(page, "graph").scrollIntoViewIfNeeded();
+    const selectedBox = await card(selected.id).boundingBox(), peerBox = await card(peerId).boundingBox();
+    const center = box => ({x: box.x + box.width / 2, y: box.y + box.height / 2});
+    const peerCenter = center(peerBox), beforeRequests = requests.length;
+    const hit = point => page.evaluate(({x, y}) => document.elementFromPoint(x, y)?.closest("[data-topology-node]")?.dataset.topologyNode, point);
+    await dragPoint(page, center(selectedBox), peerCenter);
+    await page.evaluate(() => document.activeElement?.blur());
+    assert.equal(await hit(peerCenter), peerId, "authorized peer paints above an overlapping selected card when neither has keyboard focus");
+    const ordinaryBox = await card(ordinary.id).boundingBox();
+    const ordinaryCenter = center(ordinaryBox);
+    await page.mouse.move(ordinaryCenter.x, ordinaryCenter.y);
+    await page.mouse.down();
+    await page.mouse.move(peerCenter.x, peerCenter.y, {steps: 8});
+    await settleGraph(page);
+    assert.equal(await card(ordinary.id).evaluate(node => node.classList.contains("is-dragging")), true, "the actively dragged card exposes its temporary top layer");
+    assert.equal(await hit(peerCenter), ordinary.id, "dragged ordinary card paints above peer and selected cards");
+    await page.mouse.up();
+    await settleGraph(page);
+    await page.evaluate(() => document.activeElement?.blur());
+    assert.equal(await hook(page, "graph").locator(".is-dragging").count(), 0, "drag completion clears the temporary node layer");
+    assert.equal(await hit(peerCenter), peerId, "peer resumes its top layer after drag completion");
+    await page.keyboard.press("Tab");
+    await card(ordinary.id).focus();
+    assert.equal(await card(ordinary.id).evaluate(node => node.matches(":focus-visible")), true);
+    assert.equal(await hit(peerCenter), ordinary.id, "keyboard-focused node is visible above an overlapping peer");
+    await page.evaluate(() => document.activeElement?.blur());
+    assert.equal(await hit(peerCenter), peerId);
+    assert.equal(requests.length, beforeRequests, "layer and drag interaction never fetch or change selection");
+    const positions = (await layoutState(page)).positions;
+    await direction(page, "reverse");
+    await mode(page, "overview");
+    assert.equal(await hook(page, "graph").locator(".is-peer, .is-dragging").count(), 0, "overview clears peer and drag layers");
+    assert.deepEqual((await layoutState(page)).positions, positions, "layer/content cleanup never resets the deliberately dragged positions");
+    await assertReadOnly(state);
+    report.checks.push(`${label}: actual overlapping hit-tests prove peer above ordinary/selected, active drag above peer, keyboard focus visible, and layer cleanup without RPC or position reset`);
   } finally { await context.close(); }
 }
 
@@ -652,6 +712,7 @@ async function interruptedGestures(browser, label) {
     await page.mouse.up();
     await settleGraph(page);
     assert.notEqual(await hook(page, "graph").getAttribute("data-dragging"), "true", "lost pointer capture cancels the gesture without sticky dragging");
+    assert.equal(await hook(page, "graph").locator(".is-dragging").count(), 0, "lost capture removes the temporary node top layer");
     box = await targetNode.boundingBox();
     const beforeNew = await layoutState(page);
     await dragPoint(page, {x: box.x + box.width / 2, y: box.y + box.height / 2}, {x: box.x + box.width / 2 + 20, y: box.y + box.height / 2 + 12});
@@ -1013,6 +1074,7 @@ async function fixturesAndFallback(browser, label) {
         if (process.argv.includes("--layer-smoke")) {
           await layerSmoke(browser, label);
           await directManipulation(browser, label, 1440);
+          await layerPriority(browser, label);
           continue;
         }
         if (process.argv.includes("--readability-audit")) {
@@ -1035,6 +1097,7 @@ async function fixturesAndFallback(browser, label) {
         }
         if (process.argv.includes("--visual-only")) continue;
         await layerSmoke(browser, label);
+        await layerPriority(browser, label);
         if (!process.argv.includes("--theme-gesture-only")) await keyboardAndErrors(browser, label);
         if (process.argv.includes("--keyboard-only")) continue;
         await directManipulation(browser, label, 1440);

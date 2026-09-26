@@ -28,6 +28,7 @@ function geometryFindings(snapshot, fit = true) {
   const findings = [];
   for (const [index, node] of snapshot.nodes.entries()) {
     if (fit && outside(node.box, snapshot.box)) findings.push({kind: "card-outside-canvas", node: node.id});
+    for (const [kind, box] of [["name", node.name], ["state", node.state]]) if (outside(box, node.box)) findings.push({kind: kind + "-outside-own-card", node: node.id});
     for (const other of snapshot.nodes.slice(index + 1)) if (overlaps(node.box, other.box)) findings.push({kind: "cards-overlap", nodes: [node.id, other.id]});
     if (node.marker.visible) {
       if (outside(node.marker.box, node.box)) findings.push({kind: "current-outside-own-card", node: node.id});
@@ -46,8 +47,39 @@ function geometryFindings(snapshot, fit = true) {
   return findings;
 }
 
+function assertCompactCards(snapshot) {
+  for (const node of snapshot.nodes) {
+    const count = node.ports.lines.length, more = node.ports.more.visible;
+    const [minimum, maximum] = more ? [92, 102] : count === 2 ? [78, 92] : count === 1 ? [64, 78] : [48, 60];
+    assert.ok(node.box.height >= minimum && node.box.height <= maximum,
+      `${node.id}: ${count} inline rows${more ? " plus extra count" : ""} use compact content height (${node.box.height}px, expected ${minimum}–${maximum})`);
+  }
+}
+
+async function assertCardEdges(page) {
+  const endpoints = await page.locator("[data-topology-graph]").evaluate(graph => {
+    const cards = new Map([...graph.querySelectorAll("[data-topology-node]")].map(node => [node.dataset.topologyNode, node.getBoundingClientRect()]));
+    const edges = [...graph.querySelectorAll("[data-topology-edge], [data-topology-spoke]")];
+    return edges.flatMap(edge => {
+      const source = cards.get(edge.dataset.source), target = cards.get(edge.dataset.target);
+      // User-created overlaps and the intentionally compressed 40-node stress
+      // fixture cannot offer a visible endpoint between two intersecting cards.
+      if (source.left < target.right + 20 && source.right > target.left - 20 && source.top < target.bottom + 20 && source.bottom > target.top - 20) return [];
+      const matrix = edge.getScreenCTM();
+      return [["source", source, 0], ["target", target, edge.getTotalLength()]].map(([kind, box, length]) => {
+        const point = edge.getPointAtLength(length).matrixTransform(matrix);
+        return {source: edge.dataset.source, target: edge.dataset.target, kind,
+          distance: Math.max(box.left - point.x, point.x - box.right, box.top - point.y, point.y - box.bottom)};
+      });
+    });
+  });
+  for (const endpoint of endpoints) assert.ok(endpoint.distance >= 5 && endpoint.distance <= 9,
+    `${endpoint.source}→${endpoint.target} ${endpoint.kind}: endpoint stays 7px outside the actual content-sized card (${endpoint.distance}px)`);
+}
+
 async function assertInlinePorts(page, links, selectedId, direction, overview = false) {
   const snapshot = await inlineSnapshot(page);
+  assertCompactCards(snapshot);
   assert.equal(snapshot.floating, 0, "SVG floating port labels are completely removed");
   const selectedMarkers = snapshot.nodes.filter(node => node.marker.visible);
   assert.deepEqual(selectedMarkers.map(node => node.id), overview ? [] : [selectedId], "only the selected relation node displays the current marker");
@@ -78,4 +110,4 @@ async function assertInlinePorts(page, links, selectedId, direction, overview = 
   return snapshot;
 }
 
-module.exports = {assertInlinePorts, compactScope, geometryFindings, inlineSnapshot};
+module.exports = {assertCardEdges, assertCompactCards, assertInlinePorts, compactScope, geometryFindings, inlineSnapshot};

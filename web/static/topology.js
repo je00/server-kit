@@ -25,6 +25,8 @@
   let layoutFrame = null;
   let requestedId = null;
   const positions = new Map();
+  const nodeMetrics = new Map();
+  let baseNodeSize = {width: 148, height: 56};
   const pointers = new Map();
   const view = {x: 0, y: 0, scale: 1, width: 0, height: 0, fitted: true};
   let scene = null;
@@ -272,14 +274,33 @@
   function measuredAspect() {
     return graph.clientWidth;
   }
-  function nodeSize() {
+  function measureNodes() {
     const style = getComputedStyle(graph);
-    return {width: parseFloat(style.getPropertyValue("--topology-node-width")) || 148,
-      height: parseFloat(style.getPropertyValue("--topology-node-height")) || 104};
+    baseNodeSize = {width: parseFloat(style.getPropertyValue("--topology-node-width")) || 148,
+      height: parseFloat(style.getPropertyValue("--topology-node-height")) || 56};
+    const ids = new Set(snapshot.nodes.map(node => node.id));
+    for (const id of nodeMetrics.keys()) if (!ids.has(id)) nodeMetrics.delete(id);
+    let changed = false;
+    for (const [id, button] of scene?.nodes || []) {
+      if (!ids.has(id) || !button.offsetWidth || !button.offsetHeight) continue;
+      // offset sizes are border boxes before the world's zoom transform.
+      const size = {width: button.offsetWidth, height: button.offsetHeight};
+      const previous = nodeMetrics.get(id);
+      if (!previous || size.width !== previous.width || size.height !== previous.height) changed = true;
+      nodeMetrics.set(id, size);
+    }
+    return changed;
+  }
+  function nodeSize(id) { return nodeMetrics.get(id) || baseNodeSize; }
+  function layoutHeight() {
+    // Reserve the largest possible scope block in either direction, not just
+    // today's visible cards. Selection must not rearrange a user's nodes.
+    const lines = snapshot.links.reduce((count, edge) => Math.max(count, Math.min(3, edge.scopes.length)), 0);
+    return baseNodeSize.height + (lines ? 6 + 15 * lines : 0);
   }
   function sizeCanvas() {
     const rows = Math.ceil((snapshot.nodes.length - 1) / 2);
-    const height = Math.max(480, Math.min(1120, rows * (nodeSize().height + 32) + (graph.clientWidth < 520 ? 200 : 100)));
+    const height = Math.max(480, Math.min(960, rows * (layoutHeight() + 20) + (graph.clientWidth < 520 ? 160 : 80)));
     graph.style.height = `${height}px`;
   }
   function syncPositions(rearrange = false) {
@@ -292,10 +313,10 @@
       layoutAspect = measuredAspect();
       const rows = Math.ceil(clients.length / 2), compact = graph.clientWidth < 520;
       const spacing = Math.max(76, (graph.clientWidth - nodeSize().width - 32) / 2);
+      const reservedHeight = layoutHeight(), rowStep = reservedHeight + 20, hubGap = reservedHeight + 10;
       clients.forEach((node, index) => {
         const column = index % 2, row = Math.floor(index / 2);
-        let y = (row - (rows - 1) / 2) * (nodeSize().height + 32);
-        const hubGap = nodeSize().height + 16;
+        let y = (row - (rows - 1) / 2) * rowStep;
         if (compact) y += y < 0 ? -hubGap : y > 0 ? hubGap : column ? hubGap : -hubGap;
         positions.set(node.id, {x: column ? spacing : -spacing, y});
       });
@@ -332,7 +353,8 @@
     const xs = points.map(point => point.x), ys = points.map(point => point.y);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
     view.width = graph.clientWidth; view.height = graph.clientHeight;
-    const size = nodeSize();
+    const sizes = snapshot.nodes.map(node => nodeSize(node.id));
+    const size = {width: Math.max(...sizes.map(size => size.width)), height: Math.max(...sizes.map(size => size.height))};
     view.scale = Math.max(.03, Math.min(1, (view.width - size.width - 32) / Math.max(1, maxX - minX), (view.height - size.height - 64) / Math.max(1, maxY - minY)));
     view.x = view.width / 2 - (minX + maxX) / 2 * view.scale;
     view.y = view.height / 2 - (minY + maxY) / 2 * view.scale;
@@ -365,13 +387,15 @@
   }
   function drawSpoke(spoke) {
     const origin = positions.get(spoke.source), center = positions.get("hub");
-    const from = cardEdge(origin, center), to = cardEdge(center, origin);
+    const from = cardEdge(origin, center, spoke.source), to = cardEdge(center, origin, "hub");
     spoke.line.setAttribute("x1", from.x); spoke.line.setAttribute("y1", from.y);
     spoke.line.setAttribute("x2", to.x); spoke.line.setAttribute("y2", to.y);
   }
-  function cardEdge(from, toward) {
-    const size = nodeSize(), dx = toward.x - from.x, dy = toward.y - from.y;
-    const fraction = Math.min(.48, (size.width / 2 + 7) / view.scale / Math.max(.01, Math.abs(dx)),
+  function cardEdge(from, toward, id) {
+    const size = nodeSize(id), dx = toward.x - from.x, dy = toward.y - from.y;
+    // Intersect the actual card, even when a nearby curve control point is
+    // inside it; a midpoint cap would leave the arrow hidden under the card.
+    const fraction = Math.min((size.width / 2 + 7) / view.scale / Math.max(.01, Math.abs(dx)),
       (size.height / 2 + 7) / view.scale / Math.max(.01, Math.abs(dy)));
     return {x: from.x + dx * fraction, y: from.y + dy * fraction};
   }
@@ -384,7 +408,7 @@
     // Route same-column permissions through the empty centre lane, not through
     // intermediate device cards. Moving a card still gives it a free curve.
     if (Math.abs(dx) < 1 && start.x !== 0) cx = graph.clientWidth < 520 ? -start.x : 0;
-    const from = cardEdge(start, {x: cx, y: cy}), to = cardEdge(end, {x: cx, y: cy});
+    const from = cardEdge(start, {x: cx, y: cy}, edge.source), to = cardEdge(end, {x: cx, y: cy}, edge.target);
     edge.path.setAttribute("d", `M ${from.x} ${from.y} Q ${cx} ${cy} ${to.x} ${to.y}`);
   }
   function updateGraphFacts() {
@@ -403,7 +427,8 @@
       const role = chosen ? "当前观察节点" : peer
         ? `${direction === "forward" ? "已授权目标" : "已授权来源"}，${relation?.[direction].label || "已授权"}`
         : relation?.label || "中心网关";
-      button.className = `topology-node kind-${node.kind} availability-${node.availability}${node.kind === "hub" ? " is-hub" : ""}${matched.has(node.id) ? " is-match" : ""}${peer ? " is-peer" : ""}`;
+      const dragging = gesture?.type === "node" && gesture.moved && gesture.id === node.id;
+      button.className = `topology-node kind-${node.kind} availability-${node.availability}${node.kind === "hub" ? " is-hub" : ""}${matched.has(node.id) ? " is-match" : ""}${peer ? " is-peer" : ""}${dragging ? " is-dragging" : ""}`;
       if (peer) button.dataset.topologyPeer = direction === "forward" ? "outbound" : "inbound";
       else delete button.dataset.topologyPeer;
       button.setAttribute("aria-pressed", String(chosen));
@@ -436,8 +461,10 @@
     const matchLabel = search.value.trim() ? ` · 搜索匹配 ${matched.size} 个` : "";
     root.querySelector("[data-topology-canvas-summary]").textContent = `全部 ${snapshot.nodes.length} 个节点（含 VPS）${displayMode === "relations" ? ` · 当前方向 ${scene.edges.length} 条授权` : " · 经 VPS 中转"}${matchLabel}`;
     findNext.disabled = !matched.size;
+    if (measureNodes() && view.width) applyView(true);
   }
   function renderGraph() {
+    measureNodes();
     sizeCanvas();
     if (!graph.clientWidth || !graph.clientHeight) {
       if (layoutFrame !== null) cancelAnimationFrame(layoutFrame);
@@ -509,8 +536,10 @@
     layoutFrame = requestAnimationFrame(() => {
       layoutFrame = null;
       if (!scene) { renderGraph(); return; }
+      const sizeChanged = measureNodes();
+      sizeCanvas();
       const width = graph.clientWidth, height = graph.clientHeight;
-      if (width === view.width && height === view.height && (userAdjustedView || Math.abs(layoutAspect - measuredAspect()) < .01)) return;
+      if (!sizeChanged && width === view.width && height === view.height && (userAdjustedView || Math.abs(layoutAspect - measuredAspect()) < .01)) return;
       if (!userAdjustedView) {
         // The first ResizeObserver notification can arrive after CSS settles
         // or an initial mobile viewport is applied. Only the untouched default
@@ -526,13 +555,18 @@
     const bounds = graph.getBoundingClientRect();
     return {x: event.clientX - bounds.left, y: event.clientY - bounds.top};
   }
+  function clearDraggingNodes() {
+    for (const button of scene?.nodes.values() || []) button.classList.remove("is-dragging");
+  }
   function pinchStart() {
+    clearDraggingNodes();
     const [first, second] = [...pointers.values()];
     const middle = {x: (first.x + second.x) / 2, y: (first.y + second.y) / 2};
     gesture = {type: "pinch", moved: true, distance: Math.max(1, Math.hypot(second.x - first.x, second.y - first.y)), scale: view.scale,
       anchor: {x: (middle.x - view.x) / view.scale, y: (middle.y - view.y) / view.scale}};
   }
   function cancelGesture() {
+    clearDraggingNodes();
     const captured = [...pointers.keys()]; pointers.clear(); gesture = null; dirtyNodes.clear();
     if (pointerFrame !== null) cancelAnimationFrame(pointerFrame);
     pointerFrame = null; graph.removeAttribute("data-dragging"); suppressClickUntil = performance.now() + 450;
@@ -563,6 +597,7 @@
       gesture.moved = true;
       if (gesture.type === "node") {
         if (!positions.has(gesture.id)) { cancelGesture(); return; }
+        scene.nodes.get(gesture.id)?.classList.add("is-dragging");
         positions.set(gesture.id, {x: gesture.origin.x + dx / view.scale, y: gesture.origin.y + dy / view.scale}); dirtyNodes.add(gesture.id);
       } else { view.x = gesture.origin.x + dx; view.y = gesture.origin.y + dy; }
     }
@@ -571,6 +606,7 @@
   function finishPointer(event, canceled = false) {
     if (!pointers.has(event.pointerId)) return;
     const current = gesture; pointers.delete(event.pointerId);
+    clearDraggingNodes();
     try { graph.releasePointerCapture(event.pointerId); } catch (_) { /* Safe after pointer cancellation. */ }
     if (pointerFrame !== null) cancelAnimationFrame(pointerFrame);
     flushPointers();
@@ -714,7 +750,7 @@
     if (pointerFrame !== null) cancelAnimationFrame(pointerFrame);
     flushPointers();
     for (const id of pointers.keys()) { try { graph.releasePointerCapture(id); } catch (_) { /* Already released. */ } }
-    pointers.clear(); gesture = null; graph.removeAttribute("data-dragging");
+    pointers.clear(); gesture = null; graph.removeAttribute("data-dragging"); clearDraggingNodes();
     refresh.disabled = false;
     root.removeAttribute("aria-busy");
     select.value = snapshot.selected_id;

@@ -7,7 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {chromium, webkit} = require("playwright");
-const {assertInlinePorts, geometryFindings} = require("./topology_inline_assertions.cjs");
+const {assertCardEdges, assertInlinePorts, geometryFindings} = require("./topology_inline_assertions.cjs");
 const base = new URL(process.argv[2] || "http://127.0.0.1:8808/");
 assert.ok(base.protocol === "http:" && ["localhost", "127.0.0.1"].includes(base.hostname)
   && !base.username && !base.password && base.pathname === "/", "only an isolated loopback preview is allowed");
@@ -118,14 +118,18 @@ async function overview(page, model, requests) {
   assert.equal(await hook(page, "edge").count(), 0);
   await assertPeers(page, model, "forward", true);
   await assertInlinePorts(page, model.links, model.selected_id, "forward", true);
+  await assertCardEdges(page);
   assert.equal(requests.length, beforeRequests, "returning to overview removes peer frames without a fetch");
   assert.deepEqual(await hook(page, "node").evaluateAll(items => items.map(node => ({id: node.dataset.topologyNode, x: node.dataset.worldX, y: node.dataset.worldY}))), before,
     "peer cleanup never rearranges nodes");
 }
 
 async function assertDirection(page, model, direction, expectedCount) {
+  const positions = await hook(page, "node").evaluateAll(nodes => nodes.map(node => ({id: node.dataset.topologyNode, x: node.dataset.worldX, y: node.dataset.worldY})));
   await page.locator(`button[data-topology-direction="${direction}"]`).click();
   await settle(page);
+  assert.deepEqual(await hook(page, "node").evaluateAll(nodes => nodes.map(node => ({id: node.dataset.topologyNode, x: node.dataset.worldX, y: node.dataset.worldY}))), positions,
+    "direction-dependent content height changes never reset node positions");
   const expected = model.links.filter(link => direction === "forward" ? link.source === model.selected_id : link.target === model.selected_id);
   assert.equal(expected.length, expectedCount, "the real backend produced the expected number of confirmed directions");
   assert.equal(await hook(page, "node").count(), 12, "all twelve nodes remain on one canvas");
@@ -141,6 +145,7 @@ async function assertDirection(page, model, direction, expectedCount) {
   const inline = await assertInlinePorts(page, model.links, model.selected_id, direction);
   const layoutFindings = geometryFindings(inline);
   assert.deepEqual(layoutFindings, [], "inline port rows are inside non-overlapping cards, including dense hub inbound");
+  await assertCardEdges(page);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
   return layoutFindings;
 }
@@ -199,7 +204,7 @@ async function scenario(browser, engine, width) {
       const actualSizes = await hook(page, "node").evaluateAll(items => items.map(node => ({id: node.dataset.topologyNode, width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height})));
       for (const actual of actualSizes) {
         const initial = cardSizes.find(node => node.id === actual.id);
-        assert.ok(Math.abs(actual.width - initial.width) < .5 && Math.abs(actual.height - initial.height) < .5, "colored peer frames never change the external card dimensions");
+        assert.ok(Math.abs(actual.width - initial.width) < .5, "card width stays fixed while height adapts to its visible contents");
       }
       await peerStyles(page, engine, width, theme, name);
       await capture(page, `${engine}-${width}-${theme}-${name}.png`);

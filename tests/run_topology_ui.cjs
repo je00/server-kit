@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {chromium, webkit} = require("playwright");
+const {assertInlinePorts, geometryFindings, inlineSnapshot} = require("./topology_inline_assertions.cjs");
 const base = new URL(process.argv[2] || "http://127.0.0.1:8765/");
 if (base.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(base.hostname)
     || base.username || base.password || base.pathname !== "/") throw new Error("Only an isolated loopback preview is allowed.");
@@ -44,7 +45,7 @@ function syntheticModel(original, id = "hub", revision = "") {
     observed_at: new Date().toISOString()};
 }
 
-function realisticModel(original, id) {
+function realisticModel(original, id, scopeOverride = null) {
   const hub = {...original.nodes.find(node => node.id === "hub")};
   const template = original.nodes.find(node => node.kind === "awg");
   const names = ["home-desktop", "office-workstation", "nas-primary", "nas-backup", "lab-server", "travel-laptop", "media-server", "family-desktop", "iphone-travel", "android-daily", "retired-phone"];
@@ -54,7 +55,7 @@ function realisticModel(original, id) {
       address: kind === "awg" ? `10.20.2.${index + 10}` : "", protected: index === 0,
       availability: disabled ? "disabled" : "enabled", state: disabled ? "已禁用" : "已启用"};
   })];
-  const scopes = [["全部协议 · 全部端口"], ["TCP · 22, 443"], ["UDP · 53"], ["TCP · 8000-8010"]];
+  const scopes = scopeOverride ? [scopeOverride] : [["全部协议 · 全部端口"], ["TCP · 22, 443"], ["UDP · 53"], ["TCP · 8000-8010"]];
   const targets = nodes.filter(node => node.kind !== "vless");
   const sources = nodes.filter(node => node.kind !== "hub" && node.availability === "enabled");
   const links = [];
@@ -63,7 +64,7 @@ function realisticModel(original, id) {
       const source = sources[index], target = targets[(index + offset) % targets.length];
       if (source.id === target.id) continue;
       const allowedScopes = scopes[(index + offset) % scopes.length];
-      links.push({source: source.id, target: target.id, status: allowedScopes === scopes[0] ? "allowed" : "partial", label: allowedScopes.join("；"), scopes: allowedScopes});
+      links.push({source: source.id, target: target.id, status: !scopeOverride && allowedScopes === scopes[0] ? "allowed" : "partial", label: allowedScopes.join("；"), scopes: allowedScopes});
     }
   }
   const selected = nodes.find(node => node.id === id) || nodes[1];
@@ -157,17 +158,13 @@ async function assertGraph(page, expectedLinks = null) {
     const edges = edgeElements.map(edge => ({tag: edge.tagName.toLowerCase(), source: edge.dataset.source, target: edge.dataset.target,
       key: edge.dataset.linkKey, dash: getComputedStyle(edge).strokeDasharray, marker: edge.getAttribute("marker-end"),
       reverseMarker: edge.getAttribute("marker-start"), bidirectional: edge.dataset.bidirectional === "true"}));
-    const labelElements = [...graph.querySelectorAll("[data-topology-edge-label]")].filter(label => getComputedStyle(label.closest("[data-topology-link]") || label).display !== "none");
-    const labels = labelElements.map(label => ({source: label.dataset.source, target: label.dataset.target,
-      key: label.dataset.linkKey, text: label.textContent.trim(), title: label.querySelector("title")?.textContent}));
     const spokes = [...graph.querySelectorAll("[data-topology-spoke]")].filter(line => getComputedStyle(line).display !== "none").map(line => ({source: line.dataset.source, target: line.dataset.target, dash: getComputedStyle(line).strokeDasharray}));
-    return {nodes, selectedId, edges, labels, spokes, options: document.querySelector("[data-topology-select]").options.length,
-      labelsAbovePaths: edgeElements.every(edge => labelElements.every(label => Boolean(edge.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING))),
+    return {nodes, selectedId, edges, spokes, options: document.querySelector("[data-topology-select]").options.length,
       initialLinks: JSON.parse(document.getElementById("topology-data").textContent).links,
       mode: document.querySelector('[data-topology-mode][aria-pressed="true"]')?.dataset.topologyMode,
       direction: document.querySelector('[data-topology-direction][aria-pressed="true"]')?.dataset.topologyDirection};
   });
-  const {nodes, selectedId, edges, labels, spokes} = value;
+  const {nodes, selectedId, edges, spokes} = value;
   assert.equal(nodes.filter(node => node.id === "hub").length, 1, "one central VPS");
   assert.ok(nodes.every(node => node.tag === "BUTTON"), "graph nodes are keyboard-operable buttons");
   assert.equal(nodes.length, value.options, "every configured node exists in the graph at once");
@@ -187,18 +184,14 @@ async function assertGraph(page, expectedLinks = null) {
   const directions = edges.flatMap(edge => edge.bidirectional ? [[edge.source, edge.target].join("→"), [edge.target, edge.source].join("→")] : [[edge.source, edge.target].join("→")]);
   assert.deepEqual(directions.sort(), expected.map(edge => [edge.source, edge.target].join("→")).sort(),
     "only the selected node's chosen confirmed direction is drawn; overview, unrelated, unknown, and inactive directions are absent");
-  assert.equal(labels.length, edges.length, "each permission path has a port label");
-  assert.equal(value.labelsAbovePaths, true, "all permission paths paint below every protocol/port label");
+  await assertInlinePorts(page, expectedLinks || value.initialLinks, selectedId, value.direction, value.mode === "overview");
   for (const edge of edges) {
     assert.equal(edge.tag, "path");
     assert.ok(edge.dash && edge.dash !== "none" && edge.dash !== "0px", "permission links are dashed");
     assert.ok(edge.marker, "every permission path has a directional arrow");
     assert.equal(edge.bidirectional, false, "a single-direction inspection must not imply a reverse permission");
-    const label = labels.find(label => label.key === edge.key);
-    assert.ok(label && label.text, "each permission path has its own readable label");
     const link = expected.find(link => link.source === edge.source && link.target === edge.target);
     assert.ok(link, "every drawn edge exists in the configured selected direction");
-    assert.ok(label.title?.includes(link.label), "compact graph labels retain a full protocol/port tooltip");
   }
   assert.equal(await hook(page, "direction").first().isVisible(), value.mode === "relations", "direction control is shown only while inspecting relationships");
   assert.equal(await hook(page, "focus").count(), 0, "the old all-edge focus checkbox is removed");
@@ -244,8 +237,8 @@ async function layoutState(page) {
       x: Number(node.dataset.worldX), y: Number(node.dataset.worldY)})),
     viewport: {x: Number(graph.dataset.viewportX), y: Number(graph.dataset.viewportY), scale: Number(graph.dataset.viewportScale)},
     edges: [...graph.querySelectorAll("[data-topology-edge]")].map(edge => ({key: edge.dataset.linkKey, path: edge.getAttribute("d")})),
-    labels: [...graph.querySelectorAll("[data-topology-edge-label]")].map(label => ({key: label.dataset.linkKey,
-      x: label.getAttribute("x"), y: label.getAttribute("y"), transform: label.getAttribute("transform")})),
+    ports: [...graph.querySelectorAll(".topology-node-port")].map(port => ({id: port.closest("[data-topology-node]").dataset.topologyNode,
+      scope: port.dataset.topologyScope, text: port.textContent})),
   }));
 }
 
@@ -254,33 +247,22 @@ async function settleGraph(page) {
 }
 
 async function readabilitySnapshot(page) {
-  return hook(page, "graph").evaluate(graph => {
+  const inline = await inlineSnapshot(page);
+  const metrics = await hook(page, "graph").evaluate(graph => {
     const canvas = graph.getBoundingClientRect();
     const visible = node => node.getClientRects().length && getComputedStyle(node.closest("[data-topology-link]") || node).display !== "none";
     const names = [...graph.querySelectorAll("[data-topology-node] strong")].map(node => ({text: node.textContent, rect: node.getBoundingClientRect(), font: parseFloat(getComputedStyle(node).fontSize)}));
-    const cards = [...graph.querySelectorAll("[data-topology-node]")].map(node => ({id: node.dataset.topologyNode, rect: node.getBoundingClientRect()}));
-    const labels = [...graph.querySelectorAll("[data-topology-edge-label]")].filter(visible).map(node => ({key: node.dataset.linkKey, rect: node.getBoundingClientRect(),
-      text: node.querySelector("text")?.textContent || node.textContent, font: parseFloat(getComputedStyle(node.querySelector("text") || node).fontSize)}));
     const area = (a, b) => Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left)) * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
-    // A subpixel antialiased border touch does not hide text; use the same
-    // one-CSS-pixel tolerance as the canvas-boundary checks in this suite.
-    const cardOccludes = (a, b) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
-      Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
     return {nodes: names.length, displayedPermissionPaths: [...graph.querySelectorAll("[data-topology-edge]")].filter(visible).length,
-      clippedPortLabels: labels.filter(({rect}) => rect.left < canvas.left + 1 || rect.right > canvas.right - 1 || rect.top < canvas.top + 1 || rect.bottom > canvas.bottom - 1).map(label => label.key),
-      portLabelPairsOverlapping: labels.flatMap((a, i) => labels.slice(i + 1).filter(b => area(a.rect, b.rect) > 4).map(b => [a.key, b.key])),
-      portLabelsCoveringNames: labels.flatMap(a => names.filter(b => area(a.rect, b.rect) > 4).map(b => [a.key, b.text])),
-      portLabelsBehindCards: labels.flatMap(a => cards.filter(b => cardOccludes(a.rect, b.rect)).map(b => ({link: a.key, node: b.id, area: area(a.rect, b.rect),
-        label: {left: a.rect.left, top: a.rect.top, right: a.rect.right, bottom: a.rect.bottom},
-        card: {left: b.rect.left, top: b.rect.top, right: b.rect.right, bottom: b.rect.bottom}}))),
-      nodeCardsOverlapping: cards.flatMap((a, index) => cards.slice(index + 1).filter(b => area(a.rect, b.rect) > 4).map(b => [a.id, b.id])),
-      clippedNodeCards: cards.filter(({rect}) => rect.left < canvas.left - 1 || rect.right > canvas.right + 1 || rect.top < canvas.top - 1 || rect.bottom > canvas.bottom + 1).map(card => card.id),
       namesOverlapping: names.flatMap((a, i) => names.slice(i + 1).filter(b => area(a.rect, b.rect) > 4).map(b => [a.text, b.text])),
-      nodeNameFont: Math.min(...names.map(node => node.font)), portLabelFont: labels.length ? Math.min(...labels.map(label => label.font)) : null,
+      nodeNameFont: Math.min(...names.map(node => node.font)),
       canvasTopAtPageStart: Math.round(canvas.top + scrollY), canvasHeight: Math.round(canvas.height), viewportHeight: innerHeight,
       controlsAboveCanvas: [...document.querySelectorAll("[data-topology-root] button, [data-topology-root] input, [data-topology-root] select")]
         .filter(node => node.getClientRects().length && !node.closest("details:not([open])") && node.getBoundingClientRect().bottom <= canvas.top).length};
   });
+  const lines = inline.nodes.flatMap(node => node.ports.lines);
+  return {...metrics, geometryFindings: geometryFindings(inline), floatingLabels: inline.floating,
+    inlinePortFont: lines.length ? Math.min(...lines.map(line => line.font)) : null};
 }
 
 async function setTheme(page, width, theme) {
@@ -347,15 +329,11 @@ async function readabilityAudit(browser, label) {
             await page.locator(".topology-panel").screenshot({path: path.join(directory, name), style: captureStyle});
             report.screenshots.push(name);
             assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, "realistic topology never overflows the page horizontally");
-            assert.deepEqual(metrics.portLabelPairsOverlapping, [], `${name}: port labels must not overlap one another`);
-            assert.deepEqual(metrics.clippedPortLabels, [], `${name}: complete port labels stay inside the canvas`);
-            assert.deepEqual(metrics.portLabelsCoveringNames, [], `${name}: port labels must not cover node names`);
-            assert.deepEqual(metrics.portLabelsBehindCards, [], `${name}: complete port labels must not be hidden behind node cards`);
-            assert.deepEqual(metrics.nodeCardsOverlapping, [], `${name}: node cards must not obscure each other`);
-            assert.deepEqual(metrics.clippedNodeCards, [], `${name}: fitted overview keeps all node cards within the canvas`);
+            assert.deepEqual(metrics.geometryFindings, [], `${name}: fitted cards never overlap or clip and inline ports remain within their own rows`);
+            assert.equal(metrics.floatingLabels, 0);
             assert.deepEqual(metrics.namesOverlapping, [], `${name}: node names must not overlap`);
             assert.ok(metrics.nodeNameFont >= 13, `${name}: node names must be at least 13px, not tiny diagram captions`);
-            if (metrics.portLabelFont !== null) assert.ok(metrics.portLabelFont >= 12, `${name}: graph protocol/port labels must be at least 12px`);
+            if (metrics.inlinePortFont !== null) assert.ok(metrics.inlinePortFont >= 12, `${name}: inline protocol/port text must be at least 12px`);
             if (stateName === "overview") {
               assert.equal(metrics.displayedPermissionPaths, 0);
               assert.ok(metrics.controlsAboveCanvas <= 5, "default overview keeps secondary controls out of the primary toolbar");
@@ -375,19 +353,27 @@ async function readabilityAudit(browser, label) {
         assert.ok(state.requests.length <= beforeDirectionChange + 1, "direction changes are local; only selection may fetch");
       }
       await assertReadOnly(state);
-      report.checks.push(`${label} ${width}: six-node and realistic twelve-node/46-direction scenes, overview and both selected directions, complete inspector, readable type and collision-free labels in three themes`);
+      report.checks.push(`${label} ${width}: six-node and realistic twelve-node/46-direction scenes, overview and both selected directions, complete inspector, readable type and collision-free inline ports in three themes`);
     } finally { await context.close(); }
   }
 }
 
 async function layerSmoke(browser, label) {
-  const state = await session(browser, 320);
+  // Keep the historic --layer-smoke entry point while checking the new design.
+  for (const width of [320, 1440]) await inlineScopeScenario(browser, label, width);
+}
+
+async function inlineScopeScenario(browser, label, width) {
+  const state = await session(browser, width);
   const {page, context} = state;
   try {
     const original = await (await context.request.get(topologyURL + "?format=json")).json();
-    const model = realisticModel(original);
+    // A UI-only fixture covers future multi-scope responses, independent of the
+    // real backend projection checked by run_topology_permissions_ui.cjs.
+    const scopes = ["TCP · 22, 443, 445, 8000-8010, 9000-9090, 10000-11000", "UDP · 53, 123", "ICMP · 全部端口", "TCP · 22000-24000"];
+    const model = realisticModel(original, undefined, scopes);
     await page.route(jsonRoute, route => route.fulfill({status: 200, contentType: "application/json",
-      body: JSON.stringify(realisticModel(original, new URL(route.request().url()).searchParams.get("node")))}));
+      body: JSON.stringify(realisticModel(original, new URL(route.request().url()).searchParams.get("node"), scopes))}));
     await Promise.all([page.waitForResponse(jsonResponse), hook(page, "refresh").click()]);
     await page.waitForFunction(() => document.querySelectorAll("[data-topology-node]").length === 12);
     await openViewTools(page);
@@ -395,42 +381,44 @@ async function layerSmoke(browser, label) {
     await closeViewTools(page);
     await selectAndWait(page, model.nodes[1].id);
     await direction(page, "forward");
-    await setTheme(page, 320, "light");
+    await setTheme(page, width, "light");
     await assertGraph(page, model.links);
-    assert.equal(await hook(page, "graph").evaluate(graph => {
-      const paths = [...graph.querySelectorAll("[data-topology-edge]")], labels = [...graph.querySelectorAll("[data-topology-edge-label]")];
-      return paths.length > 0 && labels.length === paths.length && paths.every(path => labels.every(label =>
-        Boolean(path.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING)));
-    }), true, "all permission paths paint before every label, so a later edge cannot cross over port text");
+    const inline = await inlineSnapshot(page);
+    assert.ok(inline.nodes.some(node => node.ports.lines.some(line => line.clipped)), "long scopes exercise genuine visual ellipsis while retaining complete DOM/title/aria text");
+    assert.ok(inline.nodes.some(node => node.ports.more.visible && /另 2 项/.test(node.ports.more.text)), "the additional-scope count is visible inside the card");
     const metrics = await readabilitySnapshot(page);
-    assert.deepEqual(metrics.clippedPortLabels, []);
-    assert.deepEqual(metrics.portLabelsBehindCards, []);
-    report.readability.push({browser: label, width: 320, state: "forward-layer-fixed", ...metrics});
+    assert.deepEqual(metrics.geometryFindings, []);
+    report.readability.push({browser: label, width, state: "four-inline-scopes", ...metrics});
     await page.evaluate(() => document.activeElement?.blur());
-    const name = `${label}-320-12-node-layer-fixed.png`;
+    const name = `${label}-${width}-12-node-four-inline-scopes.png`;
     await page.locator(".topology-panel").screenshot({path: path.join(directory, name), style: captureStyle});
     report.screenshots.push(name);
+    await direction(page, "reverse");
+    await assertGraph(page, model.links);
+    assert.deepEqual((await readabilitySnapshot(page)).geometryFindings, []);
+    await mode(page, "overview");
+    await assertGraph(page, model.links);
     await assertReadOnly(state);
-    report.checks.push(`${label}: fresh 320px twelve-node forward view paints every port label above every permission path`);
+    report.checks.push(`${label} ${width}: twelve-node inline ports retain four full scopes in DOM/title/aria/inspector, ellipsis and extra-count rows never collide, direction and overview clean up ports`);
   } finally { await context.close(); }
 }
 
 async function assertLegibleOverview(page, width) {
   await settleGraph(page);
+  const inline = await inlineSnapshot(page);
+  assert.equal(inline.floating, 0);
+  assert.deepEqual(geometryFindings(inline), [], "fitted card contents and neighboring cards never overlap or clip");
   const result = await hook(page, "graph").evaluate(graph => {
     const box = graph.getBoundingClientRect();
     const names = [...graph.querySelectorAll("[data-topology-node] strong")].map(node => ({name: node.textContent, box: node.getBoundingClientRect()}));
-    const labels = [...graph.querySelectorAll("[data-topology-edge-label]")].map(node => ({name: node.dataset.linkKey, box: node.getBoundingClientRect()}));
     const nodes = [...graph.querySelectorAll("[data-topology-node]")].map(node => node.getBoundingClientRect());
     const overlap = (a, b) => a.left < b.right - .5 && a.right > b.left + .5 && a.top < b.bottom - .5 && a.bottom > b.top + .5;
     return {
-      clippedLabels: labels.filter(({box: item}) => item.left < box.left - 1 || item.right > box.right + 1 || item.top < box.top - 1 || item.bottom > box.bottom + 1).map(item => item.name),
       overlappingNames: names.flatMap((a, index) => names.slice(index + 1).filter(b => overlap(a.box, b.box)).map(b => [a.name, b.name])),
       verticalFraction: (Math.max(...nodes.map(node => node.y + node.height / 2)) - Math.min(...nodes.map(node => node.y + node.height / 2))) / box.height,
     };
   });
-  assert.deepEqual(result.clippedLabels, [], "default overview keeps complete protocol/port labels inside the canvas");
-  assert.deepEqual(result.overlappingNames, [], "default overview does not obscure node names with neighboring labels");
+  assert.deepEqual(result.overlappingNames, [], "default overview does not obscure node names with neighboring cards");
   if (width <= 390) assert.ok(result.verticalFraction > .5, "cold mobile layout uses the available portrait canvas instead of shrinking a desktop layout");
 }
 
@@ -532,7 +520,7 @@ async function directManipulation(browser, label, width, touch = false) {
     const moved = await layoutState(page);
     assert.notDeepEqual(moved.positions.find(node => node.id === nodeId), original.positions.find(node => node.id === nodeId), "drag changes node world coordinates");
     assert.notDeepEqual(moved.edges, original.edges, "drag updates permission path geometry");
-    assert.notDeepEqual(moved.labels, original.labels, "drag updates port label positions");
+    assert.deepEqual(moved.ports, original.ports, "drag preserves inline protocol/port contents inside the moving cards");
     assert.equal(await hook(page, "select").inputValue(), selected, "dragging does not select the dragged node");
     assert.equal(requests.length, beforeRequests, "dragging does not trigger a selection fetch");
     if (touch) assert.equal(await page.evaluate(() => scrollY), initialScroll, "touch node drag does not scroll the document");
@@ -614,8 +602,31 @@ async function directManipulation(browser, label, width, touch = false) {
     await openViewTools(page);
     await hook(page, "reset").click();
     assert.deepEqual((await layoutState(page)).positions, original.positions, "reset restores the deterministic layout");
+    if (!touch) {
+      await closeViewTools(page);
+      await selectAndWait(page, source);
+      await hook(page, "graph").focus();
+      await page.keyboard.press("ArrowRight");
+      await settleGraph(page);
+      const beforeResize = await layoutState(page);
+      const beforeWidth = await hook(page, "node").first().evaluate(node => node.getBoundingClientRect().width);
+      await page.setViewportSize({width: 590, height: 844});
+      await settleGraph(page);
+      const resized = await layoutState(page);
+      const afterWidth = await hook(page, "node").first().evaluate(node => node.getBoundingClientRect().width);
+      assert.ok(afterWidth < beforeWidth, "crossing the mobile breakpoint changes card width");
+      assert.deepEqual(resized.positions, beforeResize.positions, "responsive card sizing never rearranges a user-adjusted layout");
+      assert.equal(resized.viewport.scale, beforeResize.viewport.scale, "responsive sizing preserves the user's zoom");
+      assert.notDeepEqual(resized.edges, beforeResize.edges, "responsive card widths redraw edge endpoints even at unchanged zoom");
+      await assertGraph(page);
+      await page.setViewportSize({width, height: 1000});
+      await settleGraph(page);
+      const restored = await layoutState(page);
+      assert.deepEqual(restored.positions, beforeResize.positions);
+      assert.deepEqual(restored.edges, beforeResize.edges, "restoring the breakpoint restores the exact endpoint geometry");
+    }
     await assertReadOnly(state);
-    report.checks.push(`${label} ${width}: ${touch ? "trusted touch and pinch" : "mouse, wheel, and keyboard"} node drag/pan, port-label updates, zoom/fit/reset, layout persistence, and directional inspection`);
+    report.checks.push(`${label} ${width}: ${touch ? "trusted touch and pinch" : "mouse, wheel, and keyboard"} node drag/pan, inline-port persistence, zoom/fit/reset, layout persistence, and directional inspection`);
   } finally { await context.close(); }
 }
 
@@ -1023,6 +1034,7 @@ async function fixturesAndFallback(browser, label) {
           await readabilityAudit(browser, label);
         }
         if (process.argv.includes("--visual-only")) continue;
+        await layerSmoke(browser, label);
         if (!process.argv.includes("--theme-gesture-only")) await keyboardAndErrors(browser, label);
         if (process.argv.includes("--keyboard-only")) continue;
         await directManipulation(browser, label, 1440);

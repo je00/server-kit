@@ -108,6 +108,14 @@
     if (displayMode === "overview") return [];
     return snapshot.links.filter(link => (direction === "forward" ? link.source : link.target) === snapshot.selected_id);
   }
+  function directionHint() {
+    return direction === "forward" ? "端口写在目标节点内，完整范围见详情。"
+      : "卡片端口表示该节点可访问当前节点的范围。";
+  }
+  function compactScope(scope) {
+    if (scope === "全部协议 · 全部端口") return "全协议 · 全端口";
+    return scope.replaceAll(" · ", " ").replaceAll(", ", ",");
+  }
   function renderInspector() {
     if (!inspector) return;
     const selected = snapshot.selected;
@@ -164,7 +172,7 @@
     }
     displayMode = mode;
     syncModeControls(); renderGraph();
-    setStatus(mode === "overview" ? "全部节点都在图中。点击节点查看端口。" : "只显示当前节点的一个访问方向；完整端口见详情。");
+    setStatus(mode === "overview" ? "全部节点都在图中。点击节点查看端口。" : directionHint());
   }
   function setStatus(message, state) {
     status.textContent = message;
@@ -267,11 +275,11 @@
   function nodeSize() {
     const style = getComputedStyle(graph);
     return {width: parseFloat(style.getPropertyValue("--topology-node-width")) || 148,
-      height: parseFloat(style.getPropertyValue("--topology-node-height")) || 64};
+      height: parseFloat(style.getPropertyValue("--topology-node-height")) || 104};
   }
   function sizeCanvas() {
     const rows = Math.ceil((snapshot.nodes.length - 1) / 2);
-    const height = Math.max(480, Math.min(960, rows * 100 + (graph.clientWidth < 520 ? 180 : 100)));
+    const height = Math.max(480, Math.min(1120, rows * (nodeSize().height + 32) + (graph.clientWidth < 520 ? 200 : 100)));
     graph.style.height = `${height}px`;
   }
   function syncPositions(rearrange = false) {
@@ -286,8 +294,9 @@
       const spacing = Math.max(76, (graph.clientWidth - nodeSize().width - 32) / 2);
       clients.forEach((node, index) => {
         const column = index % 2, row = Math.floor(index / 2);
-        let y = (row - (rows - 1) / 2) * 100;
-        if (compact) y += y < 0 ? -76 : y > 0 ? 76 : column ? 76 : -76;
+        let y = (row - (rows - 1) / 2) * (nodeSize().height + 32);
+        const hubGap = nodeSize().height + 16;
+        if (compact) y += y < 0 ? -hubGap : y > 0 ? hubGap : column ? hubGap : -hubGap;
         positions.set(node.id, {x: column ? spacing : -spacing, y});
       });
     }
@@ -302,7 +311,7 @@
       positions.set(node.id, candidate);
     }
   }
-  function applyView(reflowLabels = false) {
+  function applyView(redrawEdges = false) {
     if (!scene) return;
     scene.world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
     scene.world.style.setProperty("--topology-inverse-scale", String(1 / view.scale));
@@ -312,11 +321,10 @@
     graph.dataset.viewportY = String(view.y);
     graph.dataset.viewportScale = String(view.scale);
     root.querySelector("[data-topology-zoom]").textContent = `${Math.round(view.scale * 100)}%`;
-    if (reflowLabels || scene.geometryScale !== view.scale) {
+    if (redrawEdges || scene.geometryScale !== view.scale) {
       scene.spokes.forEach(drawSpoke); scene.edges.forEach(drawLink);
       scene.geometryScale = view.scale;
     }
-    if (scene.edges.length <= 100 && (reflowLabels || scene.labelScale !== view.scale)) layoutSmallLabels();
   }
   function fitAll() {
     if (!positions.size) return;
@@ -377,72 +385,21 @@
     // intermediate device cards. Moving a card still gives it a free curve.
     if (Math.abs(dx) < 1 && start.x !== 0) cx = graph.clientWidth < 520 ? -start.x : 0;
     const from = cardEdge(start, {x: cx, y: cy}), to = cardEdge(end, {x: cx, y: cy});
-    edge.curve = {from, to, cx, cy};
     edge.path.setAttribute("d", `M ${from.x} ${from.y} Q ${cx} ${cy} ${to.x} ${to.y}`);
-    const t = edge.labelPosition, rest = 1 - t;
-    const x = rest * rest * from.x + 2 * rest * t * cx + t * t * to.x;
-    const y = rest * rest * from.y + 2 * rest * t * cy + t * t * to.y;
-    edge.label.setAttribute("transform", `translate(${x} ${y})`);
-  }
-  function layoutSmallLabels() {
-    const size = nodeSize();
-    const occupied = [...positions.values()].map(position => {
-      const width = size.width + 6, height = size.height + 6;
-      return {x: position.x * view.scale + view.x - width / 2, y: position.y * view.scale + view.y - height / 2, width, height};
-    });
-    const overlap = (one, two) => Math.max(0, Math.min(one.x + one.width, two.x + two.width) - Math.max(one.x, two.x)) *
-      Math.max(0, Math.min(one.y + one.height, two.y + two.height) - Math.max(one.y, two.y));
-    for (const edge of scene.edges) {
-      const {from, to, cx, cy} = edge.curve;
-      const dx = to.x - from.x, dy = to.y - from.y, length = Math.max(1, Math.hypot(dx, dy));
-      let best = null;
-      const consider = (rawX, rawY, distanceCost) => {
-        // Clamp only the fitted view. Panning must not pin off-screen labels
-        // against the screen boundary or detach them from their device.
-        const x = view.fitted ? Math.max(edge.labelWidth / 2 + 8, Math.min(graph.clientWidth - edge.labelWidth / 2 - 8, rawX)) : rawX;
-        const y = view.fitted ? Math.max(edge.labelHeight / 2 + 8, Math.min(graph.clientHeight - edge.labelHeight / 2 - 8, rawY)) : rawY;
-        const box = {x: x - edge.labelWidth / 2 - 2, y: y - edge.labelHeight / 2 - 2, width: edge.labelWidth + 4, height: edge.labelHeight + 4};
-        const outside = Math.max(0, 5 - box.x) + Math.max(0, box.x + box.width - graph.clientWidth + 5) +
-          Math.max(0, 5 - box.y) + Math.max(0, box.y + box.height - graph.clientHeight + 5);
-        const score = occupied.reduce((sum, other) => sum + overlap(box, other), 0) * 1000 +
-          outside * (view.fitted ? 1000 : 0) + distanceCost + Math.hypot(x - rawX, y - rawY) * 2;
-        if (!best || score < best.score) best = {score, x, y, box};
-      };
-      // One direction has at most one link per counterpart: a badge directly
-      // beside that card is both unambiguous and clearer than a floating label.
-      const other = positions.get(direction === "forward" ? edge.target : edge.source);
-      const otherX = other.x * view.scale + view.x, otherY = other.y * view.scale + view.y;
-      const verticalGap = size.height / 2 + edge.labelHeight / 2 + 6;
-      consider(otherX, otherY + verticalGap, 0);
-      consider(otherX, otherY - verticalGap, 4);
-      consider(otherX + size.width / 2 + edge.labelWidth / 2 + 8, otherY, 12);
-      consider(otherX - size.width / 2 - edge.labelWidth / 2 - 8, otherY, 12);
-      for (const t of [edge.labelPosition, .5, .3, .7, .18, .82]) {
-        const rest = 1 - t;
-        const anchorX = (rest * rest * from.x + 2 * rest * t * cx + t * t * to.x) * view.scale + view.x;
-        const anchorY = (rest * rest * from.y + 2 * rest * t * cy + t * t * to.y) * view.scale + view.y;
-        for (const offset of [0, -20, 20, -40, 40, -65, 65, -88, 88]) {
-          const rawX = anchorX - dy / length * offset, rawY = anchorY + dx / length * offset;
-          consider(rawX, rawY, 24 + Math.abs(offset) + Math.abs(t - edge.labelPosition) * 40);
-        }
-      }
-      occupied.push(best.box);
-      const x = (best.x - view.x) / view.scale, y = (best.y - view.y) / view.scale;
-      edge.label.setAttribute("transform", `translate(${x} ${y})`);
-    }
-    scene.labelScale = view.scale;
   }
   function updateGraphFacts() {
     const matched = new Set(matchingNodes().map(node => node.id));
     const relations = new Map(snapshot.relations.map(relation => [relation.node.id, relation]));
     // Highlight only the opposite endpoint of the permissions actually drawn
     // for this direction. Never turn a spoke or an unknown relation into access.
-    const peers = new Set(displayMode === "relations"
-      ? scene.edges.map(edge => direction === "forward" ? edge.target : edge.source) : []);
+    const peers = new Map(displayMode === "relations"
+      ? scene.edges.map(edge => [direction === "forward" ? edge.target : edge.source, edge]) : []);
     for (const node of snapshot.nodes) {
       const button = scene.nodes.get(node.id), chosen = node.id === snapshot.selected_id;
       const relation = relations.get(node.id);
       const peer = !chosen && peers.has(node.id);
+      const scopes = peer ? peers.get(node.id).scopes : [];
+      const scopeRole = direction === "forward" ? "当前节点可访问此节点" : "此节点可访问当前节点";
       const role = chosen ? "当前观察节点" : peer
         ? `${direction === "forward" ? "已授权目标" : "已授权来源"}，${relation?.[direction].label || "已授权"}`
         : relation?.label || "中心网关";
@@ -450,10 +407,28 @@
       if (peer) button.dataset.topologyPeer = direction === "forward" ? "outbound" : "inbound";
       else delete button.dataset.topologyPeer;
       button.setAttribute("aria-pressed", String(chosen));
-      button.setAttribute("aria-label", `${node.name}，${node.kind_label}，${node.state}，在线未检测，${role}。可拖动调整布局。`);
-      button.title = `${node.name} · ${node.kind_label}${node.address ? ` · ${node.address}` : ""} · ${node.state} · ${role} · 在线未检测`;
+      const scopeText = scopes.length ? `。${scopeRole}：${scopes.join("；")}` : "";
+      button.setAttribute("aria-label", `${node.name}，${node.kind_label}，${node.state}，在线未检测，${role}${scopeText}。可拖动调整布局。`);
+      button.title = `${node.name} · ${node.kind_label}${node.address ? ` · ${node.address}` : ""} · ${node.state} · ${role}${scopeText} · 在线未检测`;
       button.querySelector("strong").textContent = node.name;
       button.querySelector(".topology-node-state").textContent = node.kind === "hub" ? "中心网关" : [node.kind.toUpperCase(), node.availability !== "enabled" ? node.state : ""].filter(Boolean).join(" · ");
+      button.querySelector(".topology-node-selected").hidden = !chosen || displayMode !== "relations";
+      const ports = button.querySelector("[data-topology-node-ports]");
+      ports.replaceChildren();
+      ports.hidden = !scopes.length;
+      ports.removeAttribute("title");
+      ports.removeAttribute("aria-label");
+      if (scopes.length) {
+        ports.title = `${scopeRole}：${scopes.join("；")}`;
+        ports.setAttribute("aria-label", ports.title);
+        scopes.slice(0, 2).forEach(scope => {
+          const line = element("span", "topology-node-port", compactScope(scope));
+          line.dataset.topologyScope = scope;
+          line.title = scope;
+          ports.append(line);
+        });
+        if (scopes.length > 2) ports.append(element("span", "topology-node-ports-more", `另 ${scopes.length - 2} 项·见详情`));
+      }
     }
     const related = new Set(scene.edges.flatMap(edge => [edge.source, edge.target]));
     for (const [id, button] of scene.nodes) button.classList.toggle("is-related", related.has(id));
@@ -461,7 +436,6 @@
     const matchLabel = search.value.trim() ? ` · 搜索匹配 ${matched.size} 个` : "";
     root.querySelector("[data-topology-canvas-summary]").textContent = `全部 ${snapshot.nodes.length} 个节点（含 VPS）${displayMode === "relations" ? ` · 当前方向 ${scene.edges.length} 条授权` : " · 经 VPS 中转"}${matchLabel}`;
     findNext.disabled = !matched.size;
-    if (scene.edges.length <= 100) layoutSmallLabels();
   }
   function renderGraph() {
     sizeCanvas();
@@ -487,42 +461,26 @@
       const line = svgElement("line", {class: "topology-spoke", "data-topology-spoke": "", "data-source": node.id, "data-target": "hub"});
       const spoke = {source: node.id, line}; scene.spokes.push(spoke); diagram.append(line); drawSpoke(spoke);
     }
-    const pathsLayer = svgElement("g", {}), labelsLayer = svgElement("g", {});
-    diagram.append(pathsLayer, labelsLayer);
+    const pathsLayer = svgElement("g", {});
+    diagram.append(pathsLayer);
     const nodeNames = new Map(snapshot.nodes.map(node => [node.id, node.name]));
     for (const link of links) {
       const linkKey = `${link.source}→${link.target}`;
       const group = svgElement("g", {class: "topology-link is-connected", "data-topology-link": "", "data-link-key": linkKey});
       const path = svgElement("path", {class: "topology-edge", "data-topology-edge": "", "data-source": link.source, "data-target": link.target, "data-link-key": linkKey, "data-bidirectional": "false", "marker-end": "url(#topology-arrow)"});
-      const label = svgElement("g", {class: "topology-edge-label", "data-topology-edge-label": "", "data-link-key": linkKey, "data-source": link.source, "data-target": link.target});
-      const inner = svgElement("g", {class: "topology-edge-label-inner"});
       const full = `${nodeNames.get(link.source)} → ${nodeNames.get(link.target)}：${link.label}`;
       const title = svgElement("title", {}); title.textContent = full;
-      const compact = link.label.replaceAll("全部协议 · 全部端口", "全端口").replaceAll(" · ", " ").replaceAll(", ", ",");
-      let lines = compact.split("；");
-      if (lines.length === 1 && compact.length > 15) {
-        const split = compact.lastIndexOf(",", 14);
-        if (split > 4) lines = [compact.slice(0, split + 1), compact.slice(split + 1)];
-      }
-      lines = lines.slice(0, 2).map((line, index) => line.length > 19 ? `${line.slice(0, 17)}…` : line + (index === 1 && compact.split("；").length > 2 ? "…" : ""));
-      const labelWidth = Math.max(...lines.map(line => [...line].reduce((sum, char) => sum + (char.charCodeAt(0) > 255 ? 12 : 7.2), 16)));
-      const labelHeight = lines.length * 15 + 8;
-      const rectangle = svgElement("rect", {x: -labelWidth / 2, y: -labelHeight / 2, width: labelWidth, height: labelHeight, rx: 4});
-      const text = svgElement("text", {class: "topology-edge-text", x: 0});
-      lines.forEach((line, index) => { const span = svgElement("tspan", {x: 0, y: (index - (lines.length - 1) / 2) * 15 + .5}); span.textContent = line; text.append(span); });
-      label.setAttribute("aria-label", full); inner.append(rectangle, text); label.append(title, inner);
-      // Keep every port badge above every path, including later-created links.
-      // Otherwise a neighbouring dashed line can be painted across its text.
-      const labelGroup = svgElement("g", {class: "topology-link is-connected"});
-      labelGroup.append(label); group.append(path); pathsLayer.append(group); labelsLayer.append(labelGroup);
-      const edge = {...link, group, path, label, labelWidth, labelHeight, labelPosition: direction === "forward" ? .72 : .28};
+      group.append(title, path); pathsLayer.append(group);
+      const edge = {...link, group, path};
       scene.edges.push(edge); scene.incidents.get(link.source).add(edge); scene.incidents.get(link.target).add(edge); drawLink(edge);
     }
     world.append(diagram);
     for (const node of snapshot.nodes) {
       const button = element("button", "topology-node"); button.type = "button"; button.dataset.topologyNode = node.id;
       const dot = element("span", "topology-node-dot"); dot.setAttribute("aria-hidden", "true");
-      button.append(dot, element("strong", "", node.name), element("span", "topology-node-state"));
+      const ports = element("span", "topology-node-ports"); ports.dataset.topologyNodePorts = "";
+      const selected = element("span", "topology-node-selected", "当前"); selected.setAttribute("aria-hidden", "true");
+      button.append(dot, element("strong", "", node.name), element("span", "topology-node-state"), selected, ports);
       scene.nodes.set(node.id, button); world.append(button); updateGeometry(node.id);
     }
     graph.replaceChildren(world);
@@ -542,8 +500,8 @@
     }
     for (const edge of changedEdges) drawLink(edge);
     for (const spoke of scene.spokes) if (dirtyNodes.has(spoke.source) || dirtyNodes.has("hub")) drawSpoke(spoke);
-    const reflowLabels = dirtyNodes.size > 0;
-    dirtyNodes.clear(); applyView(reflowLabels);
+    const redrawEdges = dirtyNodes.size > 0;
+    dirtyNodes.clear(); applyView(redrawEdges);
   }
   function schedulePointers() { if (pointerFrame === null) pointerFrame = requestAnimationFrame(flushPointers); }
   function scheduleGraph() {
@@ -561,7 +519,7 @@
         for (const id of positions.keys()) dirtyNodes.add(id);
         flushPointers(); fitAll();
       } else if (view.fitted) fitAll();
-      else { view.x += (width - view.width) / 2; view.y += (height - view.height) / 2; view.width = width; view.height = height; applyView(); }
+      else { view.x += (width - view.width) / 2; view.y += (height - view.height) / 2; view.width = width; view.height = height; applyView(true); }
     });
   }
   function localPoint(event) {
@@ -587,10 +545,9 @@
     try { graph.setPointerCapture(event.pointerId); } catch (_) { /* A detached pointer can already be gone. */ }
     if (pointers.size >= 2) { pinchStart(); return; }
     const button = event.target.closest?.("[data-topology-node]");
-    const label = event.target.closest?.("[data-topology-edge-label]");
     const id = button?.dataset.topologyNode;
     if (button) button.focus({preventScroll: true});
-    gesture = {type: id ? "node" : "pan", id, selectId: id || (label ? snapshot.selected_id : null), start: point, origin: id ? {...positions.get(id)} : {x: view.x, y: view.y}, moved: false};
+    gesture = {type: id ? "node" : "pan", id, selectId: id, start: point, origin: id ? {...positions.get(id)} : {x: view.x, y: view.y}, moved: false};
   });
   graph.addEventListener("pointermove", event => {
     if (!pointers.has(event.pointerId) || !gesture) return;
@@ -660,7 +617,7 @@
       if (controller && requestedId !== id) { controller.abort(); generation += 1; controller = null; requestedId = null; refresh.disabled = false; root.removeAttribute("aria-busy"); }
       select.value = snapshot.selected_id;
       displayMode = "relations"; syncModeControls(); renderGraph();
-      setStatus(`当前观察：${snapshot.selected.name}。在线状态未检测。`);
+      setStatus(directionHint());
       return;
     }
     if (controller) controller.abort();
@@ -697,7 +654,7 @@
       location.searchParams.set("node", snapshot.selected_id);
       location.searchParams.delete("format");
       window.history.replaceState(null, "", location.href);
-      setStatus(`已读取 ${snapshot.selected.name} 的配置关系。在线状态未检测。`);
+      setStatus(displayMode === "relations" ? directionHint() : `已读取 ${snapshot.selected.name} 的配置关系。在线状态未检测。`);
     } catch (error) {
       if (thisGeneration !== generation || (signal.aborted && !timedOut)) return;
       select.value = snapshot.selected_id;
@@ -734,7 +691,7 @@
   root.querySelectorAll("[data-topology-mode]").forEach(button => button.addEventListener("click", () => setMode(button.dataset.topologyMode)));
   root.querySelectorAll("[data-topology-direction]").forEach(button => button.addEventListener("click", () => {
     direction = button.dataset.topologyDirection;
-    syncModeControls(); renderGraph();
+    syncModeControls(); renderGraph(); setStatus(directionHint());
   }));
   root.querySelector("[data-topology-zoom-in]").addEventListener("click", () => zoomAt(1.25));
   root.querySelector("[data-topology-zoom-out]").addEventListener("click", () => zoomAt(.8));
@@ -761,7 +718,7 @@
     refresh.disabled = false;
     root.removeAttribute("aria-busy");
     select.value = snapshot.selected_id;
-    setStatus(`当前观察：${snapshot.selected.name}。在线状态未检测。`);
+    setStatus(displayMode === "relations" ? directionHint() : "全部节点都在图中。点击节点查看端口。");
   });
   window.addEventListener("pageshow", scheduleGraph);
   renderObservedAt();

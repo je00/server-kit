@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const {spawnSync} = require("node:child_process");
 const {chromium, webkit} = require("playwright");
+const {assertInlinePorts, geometryFindings} = require("./topology_inline_assertions.cjs");
 const base = new URL(process.argv[2] || "http://127.0.0.1:8808/");
 assert.ok(base.protocol === "http:" && ["localhost", "127.0.0.1"].includes(base.hostname)
   && !base.username && !base.password && base.pathname === "/", "only an isolated loopback preview is allowed");
@@ -77,11 +78,15 @@ async function peerStyles(page, engine, width, theme, caseName) {
       return values[0] * .2126 + values[1] * .7152 + values[2] * .0722;
     };
     const contrast = (a, b) => { const first = luminance(a), second = luminance(b); return (Math.max(first, second) + .05) / (Math.min(first, second) + .05); };
-    return nodes.filter(node => node.classList.contains("is-peer")).map(node => {
+    return nodes.filter(node => node.classList.contains("is-peer") || node.getAttribute("aria-pressed") === "true").map(node => {
       const style = getComputedStyle(node), bg = background(node), name = node.querySelector("strong"), state = node.querySelector(".topology-node-state");
+      const marker = node.querySelector(".topology-node-selected:not([hidden])"), markerBackground = marker ? background(marker) : null;
       const color = rgba(style.borderTopColor);
       return {id: node.dataset.topologyNode, kind: node.classList.contains("kind-awg") ? "awg" : node.classList.contains("kind-vless") ? "vless" : "hub",
+        selected: node.getAttribute("aria-pressed") === "true", stateColor: getComputedStyle(state).color,
         border: style.borderTopColor, background: style.backgroundColor, effectiveBackground: bg, color: blend(color, bg), width: parseFloat(style.borderTopWidth), height: node.getBoundingClientRect().height,
+        portContrasts: [...node.querySelectorAll(".topology-node-port")].map(port => contrast(blend(rgba(getComputedStyle(port).color), bg), bg)),
+        currentContrast: marker ? contrast(blend(rgba(getComputedStyle(marker).color), markerBackground), markerBackground) : null,
         nameContrast: contrast(blend(rgba(getComputedStyle(name).color), bg), bg), stateContrast: contrast(blend(rgba(getComputedStyle(state).color), bg), bg)};
     });
   });
@@ -89,6 +94,9 @@ async function peerStyles(page, engine, width, theme, caseName) {
     assert.ok(item.width >= 2, `${engine}/${width}/${theme}/${item.id}: peer frame is at least 2 CSS px`);
     assert.ok(item.nameContrast >= 4.5, `${engine}/${width}/${theme}/${item.id}: name text contrast ${item.nameContrast.toFixed(2)} is readable`);
     assert.ok(item.stateContrast >= 4.5, `${engine}/${width}/${theme}/${item.id}: kind/state text contrast ${item.stateContrast.toFixed(2)} is readable`);
+    assert.ok(item.portContrasts.every(value => value >= 4.5), "inline protocol/port text meets normal-text contrast");
+    if (item.currentContrast !== null) assert.ok(item.currentContrast >= 4.5, "current-node marker meets normal-text contrast");
+    if (item.selected) assert.equal(item.border, item.stateColor, "selected card uses its own type color, not an unrelated warm frame");
     const [red, green, blue] = item.color;
     if (item.kind === "awg") assert.ok(blue > red + 15 && green > red, "AWG peers use a recognizable blue frame");
     if (item.kind === "vless") assert.ok(blue > green + 15 && red > green + 10, "VLESS peers use a recognizable purple frame");
@@ -109,12 +117,13 @@ async function overview(page, model, requests) {
   await settle(page);
   assert.equal(await hook(page, "edge").count(), 0);
   await assertPeers(page, model, "forward", true);
+  await assertInlinePorts(page, model.links, model.selected_id, "forward", true);
   assert.equal(requests.length, beforeRequests, "returning to overview removes peer frames without a fetch");
   assert.deepEqual(await hook(page, "node").evaluateAll(items => items.map(node => ({id: node.dataset.topologyNode, x: node.dataset.worldX, y: node.dataset.worldY}))), before,
     "peer cleanup never rearranges nodes");
 }
 
-async function assertDirection(page, model, direction, expectedCount, recordLayout = false) {
+async function assertDirection(page, model, direction, expectedCount) {
   await page.locator(`button[data-topology-direction="${direction}"]`).click();
   await settle(page);
   const expected = model.links.filter(link => direction === "forward" ? link.source === model.selected_id : link.target === model.selected_id);
@@ -128,20 +137,10 @@ async function assertDirection(page, model, direction, expectedCount, recordLayo
     scopes: [...item.querySelectorAll(".topology-access-scopes li")].map(scope => scope.textContent)})));
   assert.deepEqual(rows.sort((a, b) => a.id.localeCompare(b.id)), expected.map(link => ({id: direction === "forward" ? link.target : link.source, scopes: link.scopes})).sort((a, b) => a.id.localeCompare(b.id)),
     "the visible inspector contains every exact backend scope and no additional access");
-  assert.equal(await hook(page, "edge-label").count(), expectedCount);
   await assertPeers(page, model, direction);
-  const bounds = await hook(page, "graph").evaluate(graph => {
-    const box = graph.getBoundingClientRect();
-    const labels = [...graph.querySelectorAll("[data-topology-edge-label]")];
-    const cards = [...graph.querySelectorAll("[data-topology-node]")].map(node => ({id: node.dataset.topologyNode, rect: node.getBoundingClientRect()}));
-    return labels.map(label => {
-      const rect = label.getBoundingClientRect();
-      return {key: label.dataset.linkKey, clipped: rect.left < box.left - 1 || rect.right > box.right + 1 || rect.top < box.top - 1 || rect.bottom > box.bottom + 1,
-        behindCard: cards.filter(({rect: card}) => Math.min(card.right, rect.right) - Math.max(card.left, rect.left) > 1 && Math.min(card.bottom, rect.bottom) - Math.max(card.top, rect.top) > 1).map(card => card.id)};
-    });
-  });
-  const layoutFindings = bounds.filter(label => label.clipped || label.behindCard.length);
-  if (!recordLayout) assert.deepEqual(layoutFindings, [], "port labels remain completely visible");
+  const inline = await assertInlinePorts(page, model.links, model.selected_id, direction);
+  const layoutFindings = geometryFindings(inline);
+  assert.deepEqual(layoutFindings, [], "inline port rows are inside non-overlapping cards, including dense hub inbound");
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
   return layoutFindings;
 }
@@ -187,9 +186,9 @@ async function scenario(browser, engine, width) {
     await hook(page, "reset").click();
     await hook(page, "view-options").locator("summary").click();
     const cardSizes = await hook(page, "node").evaluateAll(items => items.map(node => ({id: node.dataset.topologyNode, width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height})));
-    async function inspect(model, direction, expected, theme, name, recordLayout = false) {
+    async function inspect(model, direction, expected, theme, name) {
       try {
-        const findings = await assertDirection(page, model, direction, expected, recordLayout);
+        const findings = await assertDirection(page, model, direction, expected);
         if (findings.length) report.layoutFindings.push({engine, width, theme, case: name, findings});
       }
       catch (error) {
@@ -225,9 +224,7 @@ async function scenario(browser, engine, width) {
       await inspect(nasModel, "forward", 1, theme, "phone-nas-only");
       await select(page, hubModel.selected_id);
       const inboundCount = hubModel.links.filter(link => link.target === "hub").length;
-      // Keep semantic/color checks on the dense nine-source case. Report its
-      // geometry separately for an explicit baseline comparison, not as a pass.
-      await inspect(hubModel, "reverse", inboundCount, theme, "hub-inbound", true);
+      await inspect(hubModel, "reverse", inboundCount, theme, "hub-inbound");
       assert.equal(await hook(page, "graph").locator('.kind-vless.is-peer[data-topology-peer="inbound"]').count(), 2, "known VLESS sources receive purple inbound frames");
       await select(page, nasTargetModel.selected_id);
       await inspect(nasTargetModel, "reverse", 3, theme, "nas-inbound");
@@ -256,7 +253,7 @@ async function scenario(browser, engine, width) {
     assert.ok(requests.length > 0 && requests.every(request => request.method === "GET" && isJSON(new URL(request.url))));
     assert.doesNotMatch(await hook(page, "root").innerHTML(), /synthetic-topology-private-credential-never-render|vless:\/\/|Preview-only-2026/);
     report.requests.push({engine, width, topologyGETs: requests.length});
-    report.checks.push(`${engine} ${width}: twelve real-projected nodes; all eight outbound scopes and zero reverse preserved; exact blue/purple/warm peer frames, 2px width and readable contrast in three themes; forward/reverse/overview/selection cleanup, fixed dimensions, no unconfirmed or disabled peers, GET-only and no credentials`);
+    report.checks.push(`${engine} ${width}: real backend permissions, exact type-colored peers and current marker, inline protocol/port scopes with no floating labels or card overlap even for dense hub inbound, three themes, direction/overview/selection cleanup, GET-only and no credentials`);
   } finally { await context.close(); }
 }
 

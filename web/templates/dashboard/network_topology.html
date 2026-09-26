@@ -54,8 +54,9 @@
         </div>
         <div class="topology-workspace">
           <div class="topology-map-pane">
-            <div class="topology-graph" data-topology-graph role="group" tabindex="0" aria-label="全部节点与经 VPS 接入的关系图" aria-describedby="topology-canvas-help"></div>
-            <p class="topology-canvas-help" id="topology-canvas-help">拖动整理 · 滚轮 / 双指缩放<span class="sr-only">。聚焦画布后使用方向键平移、加减键缩放、数字 0 适配全部；聚焦节点后按 Alt 和方向键可移动节点。</span></p>
+            <div class="topology-touch-controls"><span id="topology-touch-hint" data-topology-touch-hint>滑动页面 · 点选节点</span><button class="secondary-button" type="button" data-topology-layout-edit aria-pressed="false" aria-controls="topology-graph">调整布局</button></div>
+            <div class="topology-graph" id="topology-graph" data-topology-graph role="group" tabindex="0" aria-label="全部节点与经 VPS 接入的关系图" aria-describedby="topology-canvas-help topology-touch-hint"></div>
+            <p class="topology-canvas-help" id="topology-canvas-help"><span class="topology-mouse-help">拖动整理 · 滚轮缩放</span><span class="topology-touch-help">点“调整布局”后可拖动、缩放；完成后恢复滑动页面。</span><span class="sr-only">聚焦画布后使用方向键平移、加减键缩放、数字 0 适配全部；聚焦节点后按 Alt 和方向键可移动节点。按 Escape 退出触屏布局调整。</span></p>
           </div>
           <aside class="topology-inspector" data-topology-inspector aria-label="当前节点访问详情"><h3>点一个节点，查看访问端口</h3><p>总览展示接入结构，节点关系按方向查看授权。</p></aside>
         </div>

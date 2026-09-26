@@ -13,6 +13,8 @@
   const findNext = root.querySelector("[data-topology-find-next]");
   const status = root.querySelector("[data-topology-status]");
   const details = root.querySelector("[data-topology-details]");
+  const layoutEdit = root.querySelector("[data-topology-layout-edit]");
+  const touchHint = root.querySelector("[data-topology-touch-hint]");
   const svgNS = "http://www.w3.org/2000/svg";
   const relationTypes = new Set(["mutual", "outbound", "inbound", "denied", "unknown", "not_applicable"]);
   const permissionTypes = new Set(["allowed", "partial", "denied", "inactive", "unknown", "not_applicable"]);
@@ -40,6 +42,7 @@
   let layoutAspect = null;
   let displayMode = "overview";
   let direction = "forward";
+  let layoutEditing = false;
   const dirtyNodes = new Set();
 
   function stringList(value) { return Array.isArray(value) && value.every(item => typeof item === "string"); }
@@ -572,8 +575,25 @@
     pointerFrame = null; graph.removeAttribute("data-dragging"); suppressClickUntil = performance.now() + 450;
     for (const id of captured) { try { graph.releasePointerCapture(id); } catch (_) { /* Already released. */ } }
   }
+  function setLayoutEditing(enabled) {
+    // Finish pending geometry before giving gestures back to the browser.
+    if (pointerFrame !== null) cancelAnimationFrame(pointerFrame);
+    flushPointers();
+    cancelGesture();
+    layoutEditing = enabled;
+    graph.dataset.layoutEditing = String(enabled);
+    layoutEdit?.setAttribute("aria-pressed", String(enabled));
+    if (layoutEdit) layoutEdit.textContent = enabled ? "完成调整" : "调整布局";
+    if (touchHint) touchHint.textContent = enabled ? "拖动节点或空白 · 双指缩放" : "滑动页面 · 点选节点";
+  }
   graph.addEventListener("pointerdown", event => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (event.pointerType === "touch") {
+      root.dataset.touchInput = "true";
+      // Do not capture, focus or cancel native scrolling, including on cards.
+      // Native click still selects a tapped node; a swipe never selects one.
+      if (!layoutEditing) { suppressClickUntil = 0; return; }
+    }
     userAdjustedView = true;
     const point = localPoint(event); pointers.set(event.pointerId, point);
     try { graph.setPointerCapture(event.pointerId); } catch (_) { /* A detached pointer can already be gone. */ }
@@ -707,6 +727,14 @@
   }
 
   root.querySelector("[data-topology-enhancement]").hidden = false;
+  if (navigator.maxTouchPoints > 0 || window.matchMedia("(any-pointer: coarse)").matches) root.dataset.touchInput = "true";
+  graph.dataset.layoutEditing = "false";
+  layoutEdit?.addEventListener("click", () => setLayoutEditing(!layoutEditing));
+  root.addEventListener("keydown", event => {
+    if (event.key === "Escape" && layoutEditing) {
+      event.preventDefault(); setLayoutEditing(false); layoutEdit?.focus({preventScroll: true});
+    }
+  });
   root.querySelectorAll("[data-topology-enhanced-control]").forEach(control => { control.hidden = false; });
   root.querySelector("[data-topology-submit]").hidden = true;
   const fullDetails = root.querySelector("[data-topology-full-details]");
@@ -747,10 +775,7 @@
     requestedId = null;
     if (layoutFrame !== null) cancelAnimationFrame(layoutFrame);
     layoutFrame = null;
-    if (pointerFrame !== null) cancelAnimationFrame(pointerFrame);
-    flushPointers();
-    for (const id of pointers.keys()) { try { graph.releasePointerCapture(id); } catch (_) { /* Already released. */ } }
-    pointers.clear(); gesture = null; graph.removeAttribute("data-dragging"); clearDraggingNodes();
+    setLayoutEditing(false);
     refresh.disabled = false;
     root.removeAttribute("aria-busy");
     select.value = snapshot.selected_id;

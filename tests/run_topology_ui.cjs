@@ -504,6 +504,179 @@ async function dragPoint(page, start, end, touch = false) {
   assert.equal(await hook(page, "graph").locator(".is-dragging").count(), 0, "completed mouse/touch gestures remove their temporary card layer");
 }
 
+async function setLayoutEditing(page, enabled) {
+  const toggle = hook(page, "layout-edit");
+  if ((await toggle.getAttribute("aria-pressed") === "true") !== enabled) await toggle.click();
+  assert.equal(await toggle.getAttribute("aria-pressed"), String(enabled), "explicit layout toggle exposes its current state");
+  assert.equal(await hook(page, "graph").getAttribute("data-layout-editing"), String(enabled), "canvas matches the explicit layout mode");
+  await settleGraph(page);
+}
+
+async function touchScrollStart(page, onNode) {
+  // Keep the real document, canvas and fixed mobile navigation in place. Pick a
+  // visible starting point instead of dispatching a synthetic scroll event.
+  await hook(page, "graph").evaluate(graph => window.scrollTo(0, graph.getBoundingClientRect().top + scrollY - 120));
+  await page.waitForTimeout(100);
+  const start = await hook(page, "graph").evaluate((graph, onNode) => {
+    const bounds = graph.getBoundingClientRect();
+    const top = Math.max(bounds.top + 24, 320), bottom = Math.min(bounds.bottom - 24, innerHeight - 180);
+    if (onNode) {
+      for (const node of graph.querySelectorAll("[data-topology-node]")) {
+        const box = node.getBoundingClientRect(), x = box.left + box.width / 2, y = box.top + box.height / 2;
+        if (y >= top && y <= bottom && x > bounds.left + 15 && x < bounds.right - 15
+            && document.elementFromPoint(x, y)?.closest("[data-topology-node]") === node) return {x, y, id: node.dataset.topologyNode};
+      }
+    } else {
+      for (let y = bottom; y >= top; y -= 24) for (let x = bounds.left + 20; x < bounds.right - 20; x += 24) {
+        const item = document.elementFromPoint(x, y);
+        if (item && graph.contains(item) && !item.closest("[data-topology-node]")) return {x, y};
+      }
+    }
+    return null;
+  }, onNode);
+  assert.ok(start, `real mobile graph exposes a visible ${onNode ? "node" : "background"} swipe target`);
+  return start;
+}
+
+async function nativeSwipe(page, start, dy = -190) {
+  const channel = await page.context().newCDPSession(page);
+  try {
+    await channel.send("Input.dispatchTouchEvent", {type: "touchStart", touchPoints: [{id: 1, x: start.x, y: start.y}]});
+    for (let step = 1; step <= 10; step++) {
+      await channel.send("Input.dispatchTouchEvent", {type: "touchMove", touchPoints: [{id: 1, x: start.x, y: start.y + dy * step / 10}]});
+      await page.waitForTimeout(20);
+    }
+    // Ending at rest avoids a long fling affecting the following assertion.
+    await page.waitForTimeout(140);
+    await channel.send("Input.dispatchTouchEvent", {type: "touchEnd", touchPoints: []});
+  } finally { await channel.detach(); }
+  await page.waitForTimeout(180);
+  await settleGraph(page);
+}
+
+async function touchScrollNavigation(browser, label) {
+  const state = await session(browser, 390);
+  const {page, context, requests} = state;
+  try {
+    assert.equal(await hook(page, "layout-edit").getAttribute("aria-pressed"), "false", "mobile loads in reading mode, never in layout mode");
+    const assertTouchPolicy = async editing => {
+      const actions = await hook(page, "graph").evaluate(graph => ({
+        graph: getComputedStyle(graph).touchAction,
+        nodes: [...graph.querySelectorAll("[data-topology-node]")].map(node => getComputedStyle(node).touchAction),
+      }));
+      if (editing) assert.equal(actions.graph, "none", "layout mode alone claims native touch gestures for the canvas subtree");
+      else for (const action of [actions.graph, ...actions.nodes]) {
+        assert.ok(action === "auto" || action === "manipulation" || action.includes("pan-y"), "reading mode permits native vertical page scrolling on both canvas and cards");
+      }
+    };
+    await assertTouchPolicy(false);
+    const assertReadingSwipe = async onNode => {
+      const start = await touchScrollStart(page, onNode);
+      const before = await layoutState(page), selection = await hook(page, "select").inputValue();
+      const beforeRequests = requests.length, initialScroll = await page.evaluate(() => scrollY);
+      if (label === "chromium") {
+        await nativeSwipe(page, start);
+        assert.ok(await page.evaluate(() => scrollY) > initialScroll + 70, `trusted ${onNode ? "node" : "background"} swipe scrolls the real document`);
+      } else {
+        // WebKit exposes no CDP touch injection. Verify pointer cancellation and
+        // the native-scroll CSS contract; do not pretend dispatchEvent scrolls.
+        const result = await hook(page, "graph").evaluate((graph, start) => {
+          const target = document.elementFromPoint(start.x, start.y);
+          const states = [];
+          for (const [type, y] of [["pointerdown", start.y], ["pointermove", start.y - 100], ["pointercancel", start.y - 100]]) {
+            const event = new PointerEvent(type, {pointerType: "touch", pointerId: 912, isPrimary: true, clientX: start.x, clientY: y, bubbles: true, cancelable: true});
+            target.dispatchEvent(event);
+            states.push({prevented: event.defaultPrevented, dragging: graph.dataset.dragging === "true"});
+          }
+          return states;
+        }, start);
+        assert.ok(result.every(item => !item.prevented && !item.dragging), "reading touch never captures movement, suppresses native default or begins a canvas drag");
+      }
+      assert.deepEqual(await layoutState(page), before, "reading swipe never moves nodes, pans, zooms or rewrites inline ports");
+      assert.equal(await hook(page, "select").inputValue(), selection, "scrolling from a card never selects it");
+      assert.equal(requests.length, beforeRequests, "reading swipe never fetches selection data");
+      assert.notEqual(await hook(page, "graph").getAttribute("data-dragging"), "true");
+      assert.equal(await hook(page, "graph").locator(".is-dragging").count(), 0);
+    };
+    await assertReadingSwipe(false);
+    await assertReadingSwipe(true);
+    const targetId = await hook(page, "node").evaluateAll(nodes => nodes.find(node => node.getAttribute("aria-pressed") !== "true").dataset.topologyNode);
+    await Promise.all([page.waitForResponse(jsonResponse), page.locator(`[data-topology-node="${targetId}"]`).tap()]);
+    await page.waitForFunction(id => document.querySelector("[data-topology-select]").value === id, targetId);
+    await settleGraph(page);
+    assert.equal(await hook(page, "layout-edit").getAttribute("aria-pressed"), "false", "a normal node tap selects without enabling layout changes");
+    await setLayoutEditing(page, true);
+    await assertTouchPolicy(true);
+    await hook(page, "graph").evaluate(graph => window.scrollTo(0, graph.getBoundingClientRect().top + scrollY + 100));
+    await settleGraph(page);
+    const exitVisible = await hook(page, "layout-edit").evaluate(button => {
+      const bounds = button.getBoundingClientRect(), x = bounds.left + bounds.width / 2, y = bounds.top + bounds.height / 2;
+      return bounds.top >= 0 && bounds.bottom < innerHeight - 90 && button.contains(document.elementFromPoint(x, y));
+    });
+    assert.equal(exitVisible, true, "the completion button stays visible and clickable when reading has scrolled into the middle of the canvas");
+    const editingShot = `${label}-390-touch-layout-sticky.png`;
+    await page.screenshot({path: path.join(directory, editingShot), style: captureStyle});
+    report.screenshots.push(editingShot);
+    const start = await touchScrollStart(page, true);
+    const before = await layoutState(page);
+    // Mouse remains available even on hybrid touch devices. Exit through the
+    // real button click handler while its captured drag is still active.
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(start.x + 12, start.y + 10);
+    assert.equal(await hook(page, "graph").locator(".is-dragging").count(), 1, "layout mode begins an active card drag");
+    await hook(page, "layout-edit").evaluate(button => button.click());
+    assert.notEqual(await hook(page, "graph").getAttribute("data-dragging"), "true", "leaving layout mode cancels an active gesture");
+    assert.equal(await hook(page, "graph").locator(".is-dragging").count(), 0, "leaving layout mode removes the temporary active layer");
+    const stopped = await layoutState(page);
+    await page.mouse.move(start.x + 60, start.y + 50);
+    await page.mouse.up();
+    await settleGraph(page);
+    assert.deepEqual(await layoutState(page), stopped, "a canceled gesture cannot continue moving after layout mode exits");
+    assert.notDeepEqual(stopped.positions, before.positions, "exiting layout mode preserves changes already made rather than resetting the arrangement");
+    await assertTouchPolicy(false);
+    // Exercise the first native tap inside the 450 ms synthetic-click guard
+    // left by the canceled drag, rather than waiting through another swipe.
+    const immediateTap = await hook(page, "graph").evaluate(graph => {
+      for (const node of graph.querySelectorAll('[data-topology-node][aria-pressed="false"]')) {
+        const box = node.getBoundingClientRect(), x = box.left + box.width / 2, y = box.top + box.height / 2;
+        if (y > 100 && y < innerHeight - 100 && document.elementFromPoint(x, y)?.closest("[data-topology-node]") === node) return {x, y, id: node.dataset.topologyNode};
+      }
+      return null;
+    });
+    assert.ok(immediateTap, "mobile graph exposes an unselected card for immediate tap recovery");
+    // Reenter/finish without moving the page to start a deterministic guard.
+    await hook(page, "layout-edit").evaluate(button => { button.click(); button.click(); });
+    await Promise.all([page.waitForResponse(jsonResponse), page.touchscreen.tap(immediateTap.x, immediateTap.y)]);
+    await page.waitForFunction(id => document.querySelector("[data-topology-select]").value === id, immediateTap.id);
+    await settleGraph(page);
+    assert.equal(await hook(page, "layout-edit").getAttribute("aria-pressed"), "false", "the first tap after completing a layout edit selects immediately without reentering layout mode");
+    await assertReadingSwipe(false);
+    await assertReadingSwipe(true);
+    await screenshot(page, `${label}-390-touch-page-scroll`);
+    await setLayoutEditing(page, true);
+    await hook(page, "graph").focus();
+    await page.keyboard.press("Escape");
+    assert.equal(await hook(page, "layout-edit").getAttribute("aria-pressed"), "false", "Escape provides an accessible way back to page scrolling");
+    await assertTouchPolicy(false);
+    await setLayoutEditing(page, true);
+    await hook(page, "layout-edit").focus();
+    await page.keyboard.press("Escape");
+    assert.equal(await hook(page, "layout-edit").getAttribute("aria-pressed"), "false", "Escape also exits immediately while focus remains on the layout button");
+    await assertTouchPolicy(false);
+    await assertReadOnly(state);
+    await setLayoutEditing(page, true);
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", {persisted: true})));
+    assert.equal(await hook(page, "layout-edit").getAttribute("aria-pressed"), "false", "leaving or restoring the page never leaves native scrolling captured");
+    assert.equal(await hook(page, "graph").locator(".is-dragging").count(), 0);
+    await page.reload();
+    await hook(page, "root").waitFor();
+    assert.equal(await hook(page, "layout-edit").getAttribute("aria-pressed"), "false", "layout manipulation is never sticky across page loads");
+    await assertTouchPolicy(false);
+    report.checks.push(`${label}: reading-mode ${label === "chromium" ? "trusted native page scrolling" : "touch-action/pointer lifecycle"} from background and cards, tap selection, explicit layout mode, active-gesture cancellation, and restored reading mode after exit/reload`);
+  } finally { await page.mouse.up().catch(() => {}); await context.close(); }
+}
+
 async function directManipulation(browser, label, width, touch = false) {
   const state = await session(browser, width);
   const {page, context, requests} = state;
@@ -511,6 +684,7 @@ async function directManipulation(browser, label, width, touch = false) {
     const model = await (await context.request.get(topologyURL + "?format=json")).json();
     const source = model.links.find(link => link.source !== "hub").source;
     await selectAndWait(page, source);
+    if (touch) await setLayoutEditing(page, true);
     await hook(page, "fit").click();
     await hook(page, "graph").scrollIntoViewIfNeeded();
     const original = await layoutState(page);
@@ -1071,6 +1245,12 @@ async function fixturesAndFallback(browser, label) {
     for (const [label, engine] of [["chromium", chromium], ["webkit", webkit]]) {
       const browser = await engine.launch();
       try {
+        if (process.argv.includes("--touch-scroll-only")) {
+          await touchScrollNavigation(browser, label);
+          if (label === "chromium") await directManipulation(browser, label, 390, true);
+          await directManipulation(browser, label, 1440);
+          continue;
+        }
         if (process.argv.includes("--layer-smoke")) {
           await layerSmoke(browser, label);
           await directManipulation(browser, label, 1440);
@@ -1101,6 +1281,7 @@ async function fixturesAndFallback(browser, label) {
         if (!process.argv.includes("--theme-gesture-only")) await keyboardAndErrors(browser, label);
         if (process.argv.includes("--keyboard-only")) continue;
         await directManipulation(browser, label, 1440);
+        await touchScrollNavigation(browser, label);
         if (label === "chromium") await directManipulation(browser, label, 390, true);
         await interruptedGestures(browser, label);
         if (process.argv.includes("--theme-gesture-only")) continue;

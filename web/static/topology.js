@@ -109,7 +109,7 @@
     const query = search.value.trim().toLocaleLowerCase();
     return query ? snapshot.nodes.filter(node => [node.name, node.address, node.kind_label, node.kind].join(" ").toLocaleLowerCase().includes(query)) : [];
   }
-  function visibleLinks() {
+  function directionalLinks() {
     if (displayMode === "overview") return [];
     return snapshot.links.filter(link => (direction === "forward" ? link.source : link.target) === snapshot.selected_id);
   }
@@ -406,21 +406,19 @@
     const start = positions.get(edge.source), end = positions.get(edge.target);
     const dx = end.x - start.x, dy = end.y - start.y, length = Math.max(1, Math.hypot(dx, dy));
     const bend = Math.min(36, length * .05);
-    let cx = (start.x + end.x) / 2 - dy / length * bend;
+    const cx = (start.x + end.x) / 2 - dy / length * bend;
     const cy = (start.y + end.y) / 2 + dx / length * bend;
-    // Route same-column permissions through the empty centre lane, not through
-    // intermediate device cards. Moving a card still gives it a free curve.
-    if (Math.abs(dx) < 1 && start.x !== 0) cx = graph.clientWidth < 520 ? -start.x : 0;
     const from = cardEdge(start, {x: cx, y: cy}, edge.source), to = cardEdge(end, {x: cx, y: cy}, edge.target);
     edge.path.setAttribute("d", `M ${from.x} ${from.y} Q ${cx} ${cy} ${to.x} ${to.y}`);
   }
   function updateGraphFacts() {
     const matched = new Set(matchingNodes().map(node => node.id));
     const relations = new Map(snapshot.relations.map(relation => [relation.node.id, relation]));
-    // Highlight only the opposite endpoint of the permissions actually drawn
-    // for this direction. Never turn a spoke or an unknown relation into access.
+    // Leaf-to-leaf permissions are shown on cards, without cross-canvas arrows.
+    // Keep their scopes and highlights independent of the drawn hub edges.
+    // Never turn a spoke or an unknown relation into access.
     const peers = new Map(displayMode === "relations"
-      ? scene.edges.map(edge => [direction === "forward" ? edge.target : edge.source, edge]) : []);
+      ? scene.links.map(link => [direction === "forward" ? link.target : link.source, link]) : []);
     for (const node of snapshot.nodes) {
       const button = scene.nodes.get(node.id), chosen = node.id === snapshot.selected_id;
       const relation = relations.get(node.id);
@@ -458,11 +456,11 @@
         if (scopes.length > 2) ports.append(element("span", "topology-node-ports-more", `另 ${scopes.length - 2} 项·见详情`));
       }
     }
-    const related = new Set(scene.edges.flatMap(edge => [edge.source, edge.target]));
+    const related = new Set(scene.links.flatMap(link => [link.source, link.target]));
     for (const [id, button] of scene.nodes) button.classList.toggle("is-related", related.has(id));
     scene.world.dataset.mode = displayMode;
     const matchLabel = search.value.trim() ? ` · 搜索匹配 ${matched.size} 个` : "";
-    root.querySelector("[data-topology-canvas-summary]").textContent = `全部 ${snapshot.nodes.length} 个节点（含 VPS）${displayMode === "relations" ? ` · 当前方向 ${scene.edges.length} 条授权` : " · 经 VPS 中转"}${matchLabel}`;
+    root.querySelector("[data-topology-canvas-summary]").textContent = `全部 ${snapshot.nodes.length} 个节点（含 VPS）${displayMode === "relations" ? ` · 当前方向 ${scene.links.length} 条授权` : " · 经 VPS 中转"}${matchLabel}`;
     findNext.disabled = !matched.size;
     if (measureNodes() && view.width) applyView(true);
   }
@@ -476,7 +474,7 @@
     }
     if (gesture?.id && !snapshot.nodes.some(node => node.id === gesture.id)) cancelGesture();
     syncPositions();
-    const links = visibleLinks();
+    const links = directionalLinks();
     const key = JSON.stringify([snapshot.nodes.map(node => node.id), links, displayMode, direction]);
     if (scene && drawingKey === key) { updateGraphFacts(); return; }
     const focusedId = graph.contains(document.activeElement) ? document.activeElement.dataset.topologyNode : null;
@@ -486,7 +484,7 @@
     const marker = svgElement("marker", {id: "topology-arrow", viewBox: "0 0 10 10", refX: 8, refY: 5, markerWidth: 10, markerHeight: 10, markerUnits: "userSpaceOnUse", orient: "auto"});
     marker.append(svgElement("path", {d: "M 1 1 L 8 5 L 1 9", fill: "none", class: "topology-arrow", "stroke-width": 1.5, "stroke-linecap": "round", "stroke-linejoin": "round"}));
     const definitions = svgElement("defs", {}); definitions.append(marker); diagram.append(definitions);
-    scene = {world, marker, nodes: new Map(), edges: [], spokes: [], incidents: new Map(snapshot.nodes.map(node => [node.id, new Set()]))};
+    scene = {world, marker, links, nodes: new Map(), edges: [], spokes: [], incidents: new Map(snapshot.nodes.map(node => [node.id, new Set()]))};
     for (const node of snapshot.nodes) if (node.id !== "hub") {
       const line = svgElement("line", {class: "topology-spoke", "data-topology-spoke": "", "data-source": node.id, "data-target": "hub"});
       const spoke = {source: node.id, line}; scene.spokes.push(spoke); diagram.append(line); drawSpoke(spoke);
@@ -495,6 +493,7 @@
     diagram.append(pathsLayer);
     const nodeNames = new Map(snapshot.nodes.map(node => [node.id, node.name]));
     for (const link of links) {
+      if (link.source !== "hub" && link.target !== "hub") continue;
       const linkKey = `${link.source}→${link.target}`;
       const group = svgElement("g", {class: "topology-link is-connected", "data-topology-link": "", "data-link-key": linkKey});
       const path = svgElement("path", {class: "topology-edge", "data-topology-edge": "", "data-source": link.source, "data-target": link.target, "data-link-key": linkKey, "data-bidirectional": "false", "marker-end": "url(#topology-arrow)"});

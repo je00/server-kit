@@ -153,6 +153,7 @@ async function assertGraph(page, expectedLinks = null) {
     const nodeElements = [...graph.querySelectorAll("[data-topology-node]")];
     const edgeElements = [...graph.querySelectorAll("[data-topology-edge]")].filter(edge => getComputedStyle(edge.closest("[data-topology-link]") || edge).display !== "none");
     const nodes = nodeElements.map(node => ({id: node.dataset.topologyNode, tag: node.tagName, pressed: node.getAttribute("aria-pressed"),
+      peer: node.dataset.topologyPeer || null, classPeer: node.classList.contains("is-peer"), related: node.classList.contains("is-related"),
       x: Number(node.dataset.worldX), y: Number(node.dataset.worldY)}));
     const selectedId = document.querySelector("[data-topology-select]").value;
     const edges = edgeElements.map(edge => ({tag: edge.tagName.toLowerCase(), source: edge.dataset.source, target: edge.dataset.target,
@@ -175,20 +176,31 @@ async function assertGraph(page, expectedLinks = null) {
   assert.equal(spokes.length, nodes.length - 1, "every graph mode preserves one structural hub spoke per client");
   const ids = new Set(nodes.map(node => node.id));
   for (const line of spokes) {
-    assert.ok((line.source === "hub") !== (line.target === "hub"), "structural spokes remain distinct from client-to-client permission links");
+    assert.ok((line.source === "hub") !== (line.target === "hub"), "structural spokes preserve the complete VPS star without client-to-client lines");
     assert.ok(ids.has(line.source) && ids.has(line.target));
     assert.ok(line.dash && line.dash !== "none" && line.dash !== "0px", "VPS access spokes are dashed");
   }
   const expected = value.mode === "overview" ? [] : (expectedLinks || value.initialLinks).filter(link =>
     value.direction === "forward" ? link.source === selectedId : link.target === selectedId);
+  const drawn = expected.filter(link => link.source === "hub" || link.target === "hub");
   const directions = edges.flatMap(edge => edge.bidirectional ? [[edge.source, edge.target].join("→"), [edge.target, edge.source].join("→")] : [[edge.source, edge.target].join("→")]);
-  assert.deepEqual(directions.sort(), expected.map(edge => [edge.source, edge.target].join("→")).sort(),
-    "only the selected node's chosen confirmed direction is drawn; overview, unrelated, unknown, and inactive directions are absent");
+  assert.deepEqual(directions.sort(), drawn.map(edge => [edge.source, edge.target].join("→")).sort(),
+    "only confirmed selected-direction permissions involving the VPS have arrows; leaf-to-leaf paths are not mounted");
+  const peers = expected.map(link => value.direction === "forward" ? link.target : link.source).sort();
+  assert.deepEqual(nodes.filter(node => node.classPeer).map(node => node.id).sort(), peers,
+    "leaf-to-leaf permissions still receive peer frames even though their crossing paths are absent");
+  assert.deepEqual(nodes.filter(node => node.peer).map(node => node.id).sort(), peers);
+  assert.ok(nodes.filter(node => node.peer).every(node => node.peer === (value.direction === "forward" ? "outbound" : "inbound")));
+  assert.deepEqual(nodes.filter(node => node.related).map(node => node.id).sort(), [...new Set(expected.flatMap(link => [link.source, link.target]))].sort(),
+    "related-node highlighting uses all selected permissions, not just the remaining VPS arrows");
+  if (value.mode === "relations") assert.match(await hook(page, "canvas-summary").innerText(), new RegExp(`当前方向 ${expected.length} 条授权`),
+    "the canvas counts every authorization, including invisible leaf-to-leaf paths");
   await assertInlinePorts(page, expectedLinks || value.initialLinks, selectedId, value.direction, value.mode === "overview");
   for (const edge of edges) {
     assert.equal(edge.tag, "path");
     assert.ok(edge.dash && edge.dash !== "none" && edge.dash !== "0px", "permission links are dashed");
     assert.ok(edge.marker, "every permission path has a directional arrow");
+    assert.ok(edge.source === "hub" || edge.target === "hub", "no leaf-to-leaf permission path survives");
     assert.equal(edge.bidirectional, false, "a single-direction inspection must not imply a reverse permission");
     const link = expected.find(link => link.source === edge.source && link.target === edge.target);
     assert.ok(link, "every drawn edge exists in the configured selected direction");
@@ -237,6 +249,8 @@ async function layoutState(page) {
       x: Number(node.dataset.worldX), y: Number(node.dataset.worldY)})),
     viewport: {x: Number(graph.dataset.viewportX), y: Number(graph.dataset.viewportY), scale: Number(graph.dataset.viewportScale)},
     edges: [...graph.querySelectorAll("[data-topology-edge]")].map(edge => ({key: edge.dataset.linkKey, path: edge.getAttribute("d")})),
+    spokes: [...graph.querySelectorAll("[data-topology-spoke]")].map(spoke => ({source: spoke.dataset.source, target: spoke.dataset.target,
+      x1: spoke.getAttribute("x1"), y1: spoke.getAttribute("y1"), x2: spoke.getAttribute("x2"), y2: spoke.getAttribute("y2")})),
     ports: [...graph.querySelectorAll(".topology-node-port")].map(port => ({id: port.closest("[data-topology-node]").dataset.topologyNode,
       scope: port.dataset.topologyScope, text: port.textContent})),
   }));
@@ -698,7 +712,9 @@ async function directManipulation(browser, label, width, touch = false) {
     await dragPoint(page, start, {x: start.x + 37, y: start.y + 29}, touch);
     const moved = await layoutState(page);
     assert.notDeepEqual(moved.positions.find(node => node.id === nodeId), original.positions.find(node => node.id === nodeId), "drag changes node world coordinates");
-    assert.notDeepEqual(moved.edges, original.edges, "drag updates permission path geometry");
+    assert.notDeepEqual(moved.spokes, original.spokes, "dragging any leaf updates its structural VPS spoke");
+    if (nodeId === "hub" || nodeId === selected) assert.notDeepEqual(moved.edges, original.edges, "dragging a permission-arrow endpoint updates that arrow");
+    else assert.deepEqual(moved.edges, original.edges, "dragging a leaf target with no crossing path leaves the selected VPS arrow unchanged");
     assert.deepEqual(moved.ports, original.ports, "drag preserves inline protocol/port contents inside the moving cards");
     assert.equal(await hook(page, "select").inputValue(), selected, "dragging does not select the dragged node");
     assert.equal(requests.length, beforeRequests, "dragging does not trigger a selection fetch");
@@ -808,6 +824,23 @@ async function directManipulation(browser, label, width, touch = false) {
       assert.deepEqual(restored.positions, beforeResize.positions);
       assert.deepEqual(restored.edges, beforeResize.edges, "restoring the breakpoint restores the exact endpoint geometry");
     }
+    await closeViewTools(page);
+    await selectAndWait(page, "hub");
+    await direction(page, "reverse");
+    await hook(page, "fit").click();
+    await hook(page, "graph").scrollIntoViewIfNeeded();
+    const hub = page.locator('[data-topology-node="hub"]'), hubBox = await hub.boundingBox();
+    const beforeHubDrag = await layoutState(page), beforeHubRequests = requests.length;
+    assert.ok(beforeHubDrag.edges.length > 0, "hub reverse view has real retained arrows to exercise");
+    await dragPoint(page, {x: hubBox.x + hubBox.width / 2, y: hubBox.y + hubBox.height / 2},
+      {x: hubBox.x + hubBox.width / 2 + 21, y: hubBox.y + hubBox.height / 2 + 17}, touch);
+    const afterHubDrag = await layoutState(page);
+    assert.deepEqual(afterHubDrag.edges.map(edge => edge.key), beforeHubDrag.edges.map(edge => edge.key), "hub drag preserves every retained permission");
+    assert.ok(afterHubDrag.edges.every((edge, index) => edge.path !== beforeHubDrag.edges[index].path), "moving the hub updates every retained permission arrow");
+    assert.ok(afterHubDrag.spokes.every((spoke, index) => JSON.stringify(spoke) !== JSON.stringify(beforeHubDrag.spokes[index])), "moving the hub updates every structural spoke");
+    assert.deepEqual(afterHubDrag.ports, beforeHubDrag.ports, "hub drag preserves all source port scopes");
+    assert.equal(requests.length, beforeHubRequests, "hub drag remains local and read-only");
+    await assertGraph(page);
     await assertReadOnly(state);
     report.checks.push(`${label} ${width}: ${touch ? "trusted touch and pinch" : "mouse, wheel, and keyboard"} node drag/pan, inline-port persistence, zoom/fit/reset, layout persistence, and directional inspection`);
   } finally { await context.close(); }
@@ -1201,7 +1234,8 @@ async function stressAndRace(browser, label) {
     const denseDragMs = Date.now() - dragStarted;
     const afterDenseDrag = await layoutState(page);
     assert.notDeepEqual(afterDenseDrag.positions, beforeDenseDrag.positions, "dense graph remains draggable");
-    assert.notDeepEqual(afterDenseDrag.edges, beforeDenseDrag.edges, "dense graph updates its paths while dragging");
+    assert.notDeepEqual(afterDenseDrag.spokes, beforeDenseDrag.spokes, "dense graph updates the dragged leaf's VPS spoke");
+    assert.deepEqual(afterDenseDrag.edges, beforeDenseDrag.edges, "an unrelated leaf drag does not invent or change permission arrows");
     assert.equal(state.requests.length, requestCount, "dense node drag does not fetch selection data");
     assert.ok(denseDragMs < 3500, "dense graph handles an eight-step drag without freezing");
     report.performance.find(item => item.browser === label).denseDragMs = denseDragMs;

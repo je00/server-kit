@@ -51,7 +51,7 @@ async function assertPeers(page, model, direction, overview = false) {
     .map(link => direction === "forward" ? link.target : link.source).sort();
   const nodes = await hook(page, "node").evaluateAll(items => items.map(node => ({id: node.dataset.topologyNode,
     peer: node.dataset.topologyPeer || null, classPeer: node.classList.contains("is-peer"), selected: node.getAttribute("aria-pressed") === "true"})));
-  assert.deepEqual(nodes.filter(node => node.classPeer).map(node => node.id).sort(), expected, "peer frames correspond exactly to the visible directed-edge counterparts");
+  assert.deepEqual(nodes.filter(node => node.classPeer).map(node => node.id).sort(), expected, "peer frames preserve every authorized counterpart, including leaf-to-leaf permissions without paths");
   assert.deepEqual(nodes.filter(node => node.peer).map(node => node.id).sort(), expected, "peer metadata is removed from every unrelated, inactive, unknown, and selected node");
   assert.ok(nodes.filter(node => node.classPeer).every(node => !node.selected && node.peer === (direction === "forward" ? "outbound" : "inbound")),
     "a selected node is never its own peer, and the frame records the correct access direction");
@@ -133,10 +133,17 @@ async function assertDirection(page, model, direction, expectedCount) {
   const expected = model.links.filter(link => direction === "forward" ? link.source === model.selected_id : link.target === model.selected_id);
   assert.equal(expected.length, expectedCount, "the real backend produced the expected number of confirmed directions");
   assert.equal(await hook(page, "node").count(), 12, "all twelve nodes remain on one canvas");
+  const spokes = await hook(page, "spoke").evaluateAll(items => items.map(spoke => ({source: spoke.dataset.source, target: spoke.dataset.target, dash: getComputedStyle(spoke).strokeDasharray})));
+  assert.equal(spokes.length, model.nodes.length - 1, "every leaf retains its structural VPS spoke");
+  assert.deepEqual(spokes.map(spoke => spoke.source).sort(), model.nodes.filter(node => node.id !== "hub").map(node => node.id).sort());
+  assert.ok(spokes.every(spoke => spoke.target === "hub" && spoke.dash !== "none"), "star spokes stay dashed and never connect two leaves");
   const paths = await hook(page, "edge").evaluateAll(edges => edges.map(edge => ({source: edge.dataset.source, target: edge.dataset.target,
     dash: getComputedStyle(edge).strokeDasharray, marker: edge.getAttribute("marker-end"), bidirectional: edge.dataset.bidirectional})));
-  assert.deepEqual(paths.map(link => `${link.source}→${link.target}`).sort(), expected.map(link => `${link.source}→${link.target}`).sort());
+  const drawn = expected.filter(link => link.source === "hub" || link.target === "hub");
+  assert.deepEqual(paths.map(link => `${link.source}→${link.target}`).sort(), drawn.map(link => `${link.source}→${link.target}`).sort(),
+    "only VPS-involving permissions have arrows; leaf-to-leaf paths are absent rather than merely hidden");
   assert.ok(paths.every(edge => edge.marker && edge.bidirectional !== "true" && edge.dash !== "none"), "confirmed permissions are dashed, directed, and never reversed");
+  assert.match(await hook(page, "canvas-summary").innerText(), new RegExp(`当前方向 ${expectedCount} 条授权`), "authorization count includes the leaf-to-leaf permissions without arrows");
   const rows = await hook(page, "inspector").locator("[data-topology-access-target]").evaluateAll(items => items.map(item => ({id: item.dataset.topologyAccessTarget,
     scopes: [...item.querySelectorAll(".topology-access-scopes li")].map(scope => scope.textContent)})));
   assert.deepEqual(rows.sort((a, b) => a.id.localeCompare(b.id)), expected.map(link => ({id: direction === "forward" ? link.target : link.source, scopes: link.scopes})).sort((a, b) => a.id.localeCompare(b.id)),
@@ -217,6 +224,9 @@ async function scenario(browser, engine, width) {
       await capture(page, `${engine}-${width}-${theme}-overview.png`);
       await select(page, allModel.selected_id);
       await inspect(allModel, "forward", 8, theme, "phone-all-forward");
+      assert.equal(await hook(page, "edge").count(), 1, "all-access phone has one VPS arrow, not eight crossing permission paths");
+      assert.equal(await hook(page, "graph").locator(".is-peer").count(), 8, "all eight authorized targets remain framed");
+      assert.equal(await hook(page, "inspector").locator("[data-topology-access-target]").count(), 8);
       assert.ok(allModel.links.filter(link => link.source === allModel.selected_id).every(link => link.scopes.length === 1 && link.scopes[0] === "全部协议 · 全部端口"));
       await inspect(allModel, "reverse", 0, theme, "phone-all-reverse");
       await overview(page, allModel, requests);
@@ -227,9 +237,12 @@ async function scenario(browser, engine, width) {
       // A new partial target must replace, not accumulate with, the warm VPS frame.
       await select(page, nasModel.selected_id);
       await inspect(nasModel, "forward", 1, theme, "phone-nas-only");
+      assert.equal(await hook(page, "edge").count(), 0, "NAS-only phone has no permission arrows while its target remains visible");
+      assert.equal(await hook(page, "graph").locator(".is-peer").count(), 1);
       await select(page, hubModel.selected_id);
       const inboundCount = hubModel.links.filter(link => link.target === "hub").length;
       await inspect(hubModel, "reverse", inboundCount, theme, "hub-inbound");
+      assert.equal(await hook(page, "edge").count(), inboundCount, "VPS reverse view retains every authorized leaf-to-VPS arrow");
       assert.equal(await hook(page, "graph").locator('.kind-vless.is-peer[data-topology-peer="inbound"]').count(), 2, "known VLESS sources receive purple inbound frames");
       await select(page, nasTargetModel.selected_id);
       await inspect(nasTargetModel, "reverse", 3, theme, "nas-inbound");

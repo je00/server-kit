@@ -89,7 +89,7 @@ async function assertInlinePorts(page, links, selectedId, direction, overview = 
     const link = expected.find(link => (direction === "forward" ? link.target : link.source) === node.id);
     const scopes = link?.scopes || [];
     assert.ok(node.ports.exists, "each card has its inline port container");
-    assert.deepEqual(node.ports.lines.map(line => line.scope), scopes.slice(0, 2), "card scopes correspond exactly to this directed edge, with no stale ports");
+    assert.deepEqual(node.ports.lines.map(line => line.scope), scopes.slice(0, 2), "card scopes preserve every directed authorization, including leaf-to-leaf access without a path, with no stale ports");
     assert.deepEqual(node.ports.lines.map(line => line.text), scopes.slice(0, 2).map(compactScope), "the visible compact scope never changes its protocol or port values");
     assert.equal(node.ports.lines.every(line => line.visible), true);
     assert.equal(node.ports.visible, scopes.length > 0, "overview, selected, unknown, and unrelated cards have no visible port block");

@@ -12,7 +12,7 @@
   const interval = 2000, staleAfter = 8000;
   function valid(value) {
     if (!value || value.schema_version !== 1 || typeof value.sampled_at !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value.sampled_at) ||
-      !Number.isFinite(Date.parse(value.sampled_at)) || Date.parse(value.sampled_at) > Date.now() + 30000 ||
+      !Number.isFinite(Date.parse(value.sampled_at)) || !Number.isInteger(value.sample_age_ms) || value.sample_age_ms < 0 || value.sample_age_ms > 86400000 ||
       value.refresh_ms !== interval || value.stale_after_ms !== staleAfter || !Array.isArray(value.nodes) || value.nodes.length > 4096) return false;
     const ids = new Set();
     return value.nodes.every(node => {
@@ -82,7 +82,7 @@
   }
   async function poll() {
     if (controller || stopped || document.hidden) return;
-    const active = new AbortController(), version = ++generation;
+    const active = new AbortController(), version = ++generation, requestedAt = performance.now();
     controller = active;
     const timeout = setTimeout(() => active.abort(), 5000);
     try {
@@ -92,9 +92,15 @@
       if (version !== generation || active.signal.aborted) return;
       if (!valid(next) || Date.parse(next.sampled_at) < sampledAt) throw new Error("invalid-sample");
       const nextAt = Date.parse(next.sampled_at);
+      // Age comes from the VPS, not the device's wall clock. Including the full
+      // request duration is conservative: a delayed response cannot look new.
+      const sampleReceivedAt = requestedAt - next.sample_age_ms;
       if (!packet || nextAt > sampledAt) {
-        packet = next; sampledAt = nextAt; receivedAt = performance.now() - Math.max(0, Date.now() - nextAt);
+        packet = next; sampledAt = nextAt; receivedAt = sampleReceivedAt;
         samples = new Map(next.nodes.map(node => [node.id, node]));
+      } else {
+        // A cached/repeated sample may get older, but must never renew its TTL.
+        receivedAt = Math.min(receivedAt, sampleReceivedAt);
       }
       failures = 0;
       render(); armExpiry();

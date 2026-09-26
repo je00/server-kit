@@ -15,7 +15,7 @@ const source = fs.readFileSync(path.join(__dirname, "../web/static/node_telemetr
 const stamp = "2026-01-01T00:00:00.000Z";
 const row = (id, state = "active", status = "ok", up = 2048, down = 3072) => ({id, state, last_seen_at: 1767225600, rate_status: status,
   upload_bps: status === "ok" ? up : null, download_bps: status === "ok" ? down : null, source: id.startsWith("awg:") ? "awg" : "none"});
-const packet = (at = stamp, nodes = [row("awg:demo"), row("vless:phone", "unsupported", "unavailable")]) => ({schema_version: 1, sampled_at: at, refresh_ms: 2000, stale_after_ms: 8000, nodes});
+const packet = (at = stamp, nodes = [row("awg:demo"), row("vless:phone", "unsupported", "unavailable")], age = 0) => ({schema_version: 1, sampled_at: at, sample_age_ms: age, refresh_ms: 2000, stale_after_ms: 8000, nodes});
 const target = '[data-telemetry-node="awg:demo"]';
 async function until(page, predicate) {
   for (let attempt = 0; attempt < 300; attempt++) {
@@ -103,7 +103,7 @@ async function pollTests(engine, browser) {
   assert.equal(calls, afterFail, "failure retries back off rather than pile up");
   report.checks.push(`${engine}: hidden pause/resume, five-second timeout, single flight, retry backoff, stale late reply rejected`);
   fail = false;
-  current = packet(new Date(await page.evaluate(() => Date.now()) - 30000).toISOString());
+  current = packet(new Date(await page.evaluate(() => Date.now()) - 30000).toISOString(), undefined, 30000);
   await page.goto(new URL("__telemetry_unit__?old-first", base).href);
   await until(page, () => document.querySelector("[data-telemetry-update]").dataset.state === "stale");
   assert.equal(await page.locator(`${target} [data-telemetry-rates]`).innerText(), "↑— ↓—", "old first packet is stale immediately");
@@ -114,8 +114,10 @@ async function pollTests(engine, browser) {
   assert.equal(await page.locator(`${target} [data-telemetry-state-label]`).innerText(), "已过期", "repeated server timestamp never extends freshness");
   current = packet(new Date(await page.evaluate(() => Date.now()) + 60000).toISOString());
   await page.goto(new URL("__telemetry_unit__?future", base).href);
-  await until(page, () => document.querySelector("[data-telemetry-update]").dataset.state === "retrying");
-  assert.equal(await page.locator(`${target} [data-telemetry-rates]`).innerText(), "↑— ↓—", "far-future sample cannot make permanent fresh data");
+  await until(page, () => document.querySelector("[data-telemetry-update]").dataset.state === "ready");
+  assert.equal(await page.locator(`${target} [data-telemetry-rates]`).innerText(), "↑2.0K ↓3.0K", "a server timestamp ahead of the device is not a clock-health verdict");
+  for (let index = 0; index < 4; index++) await advance();
+  assert.equal(await page.locator(`${target} [data-telemetry-state-label]`).innerText(), "已过期", "future-looking wall time cannot make a repeated sample permanently fresh");
   const invalidNodes = [row("awg:bad/path"), {...row("awg:demo"), upload_bps: 1e16}, {...row("awg:demo"), source: "xray"}, {...row("awg:demo"), state: "disabled"}];
   for (const [index, node] of invalidNodes.entries()) {
     current = packet(new Date(await page.evaluate(() => Date.now())).toISOString(), [node]);
@@ -123,9 +125,81 @@ async function pollTests(engine, browser) {
     await until(page, () => document.querySelector("[data-telemetry-update]").dataset.state === "retrying");
     assert.equal(await page.locator(`${target} [data-telemetry-rates]`).innerText(), "↑— ↓—");
   }
-  report.checks.push(`${engine}: old first sample, duplicate timestamp expiry, future timestamp and unsafe/inconsistent payload rejected`);
+  const invalidAges = [-1, 0.5, 86400001, null, "0", true, Infinity, undefined];
+  for (const [index, age] of invalidAges.entries()) {
+    current = {...packet(new Date(await page.evaluate(() => Date.now())).toISOString()), sample_age_ms: age};
+    if (age === undefined) delete current.sample_age_ms;
+    await page.goto(new URL(`__telemetry_unit__?invalid-age=${index}`, base).href);
+    await until(page, () => document.querySelector("[data-telemetry-update]").dataset.state === "retrying");
+    assert.equal(await page.locator(`${target} [data-telemetry-rates]`).innerText(), "↑— ↓—", `invalid age ${String(age)} is not treated as fresh zero`);
+  }
+  report.checks.push(`${engine}: server-aged old first sample, duplicate timestamp expiry, clock-offset tolerance and invalid age/identity/rates rejected`);
   report.requests.push({engine, unitGETs: calls, peak});
   await context.close();
+}
+
+async function clockTests(engine, browser) {
+  for (const offset of [-300000, 300000]) {
+    const context = await browser.newContext(), page = await context.newPage();
+    page.on("pageerror", error => report.errors.push(error.message));
+    const browserTime = new Date(Date.parse(stamp) + offset);
+    await page.clock.install({time: browserTime}); await page.clock.pauseAt(browserTime);
+    let current = packet(), calls = 0, held = null, hold = false;
+    await context.route("**/*", async route => {
+      const url = new URL(route.request().url()); assert.equal(url.origin, base.origin);
+      if (url.pathname === "/test-node-telemetry.js") return route.fulfill({contentType: "text/javascript", body: source});
+      if (url.pathname !== "/network/telemetry/") return route.fulfill({contentType: "text/html", body: html});
+      assert.equal(route.request().method(), "GET"); calls++;
+      if (hold) { held = route; return; }
+      return route.fulfill({contentType: "application/json", body: JSON.stringify(current)});
+    });
+    await page.goto(new URL(`__telemetry_unit__?clock=${offset}`, base).href);
+    await until(page, () => document.querySelector("[data-telemetry-update]").dataset.state === "ready");
+    assert.equal(await page.locator(`${target} [data-telemetry-rates]`).innerText(), "↑2.0K ↓3.0K", "a device five minutes ahead or behind must show a new sample");
+    for (const [index, jump] of [86400000, -86400000].entries()) {
+      const monotonicBefore = await page.evaluate(() => performance.now());
+      await page.clock.setSystemTime(new Date(Date.parse(stamp) + jump));
+      assert.equal(await page.evaluate(() => performance.now()), monotonicBefore, "the test changes wall time without aging the sample");
+      current = packet(new Date(Date.parse(stamp) + (index + 1) * 2000).toISOString(), [row("awg:demo", "active", "ok", (index + 3) * 1024, (index + 4) * 1024)]);
+      await page.clock.runFor(2000);
+      const expected = `↑${index + 3}.0K ↓${index + 4}.0K`;
+      await until(page, () => document.querySelector("[data-telemetry-update]").dataset.state === "ready");
+      for (let attempt = 0; attempt < 200 && await page.locator(`${target} [data-telemetry-rates]`).innerText() !== expected; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+      assert.equal(await page.locator(`${target} [data-telemetry-rates]`).innerText(), expected, "a live device clock change cannot reject or expire a fresh sample");
+    }
+    report.checks.push(`${engine}: browser clock ${offset / 60000} minutes, then ±24-hour live wall-clock changes, remain fresh`);
+
+    current = packet(stamp, undefined, 8000);
+    await page.goto(new URL("__telemetry_unit__?server-age-boundary", base).href);
+    await until(page, () => document.querySelector("[data-telemetry-update]").dataset.state === "stale");
+    assert.equal(await page.locator(`${target} [data-telemetry-rates]`).innerText(), "↑— ↓—", "an actual eight-second-old first packet is stale regardless of device time");
+    current = packet(stamp, undefined, 6500); hold = true;
+    await page.goto(new URL("__telemetry_unit__?delayed-old", base).href);
+    for (let attempt = 0; !held && attempt < 200; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.ok(held, "a delayed response is in flight");
+    await page.clock.runFor(2000);
+    await held.fulfill({contentType: "application/json", body: JSON.stringify(current)}); held = null; hold = false;
+    await until(page, () => document.querySelector("[data-telemetry-update]").dataset.state === "stale");
+    assert.equal(await page.locator(`${target} [data-telemetry-rates]`).innerText(), "↑— ↓—", "server age plus request transit time crosses the freshness limit");
+
+    current = packet(stamp, undefined, 6500);
+    await page.goto(new URL("__telemetry_unit__?remaining-lifetime", base).href);
+    await until(page, () => document.querySelector("[data-telemetry-update]").dataset.state === "ready");
+    await page.clock.runFor(1499);
+    assert.equal(await page.locator("[data-telemetry-update]").getAttribute("data-state"), "ready");
+    await page.clock.runFor(2);
+    assert.equal(await page.locator("[data-telemetry-update]").getAttribute("data-state"), "stale", "only the remaining 1.5 seconds of freshness are granted");
+    current = packet(stamp);
+    await page.goto(new URL("__telemetry_unit__?same-time-age-grows", base).href);
+    await until(page, () => document.querySelector("[data-telemetry-update]").dataset.state === "ready");
+    current = packet(stamp, undefined, 8000);
+    await page.clock.runFor(2000);
+    await until(page, () => document.querySelector("[data-telemetry-update]").dataset.state === "stale");
+    assert.equal(await page.locator(`${target} [data-telemetry-rates]`).innerText(), "↑— ↓—", "an increased authoritative age for the same timestamp must shorten freshness, never revive it");
+    report.checks.push(`${engine}: clock ${offset / 60000} minutes does not hide old server age, delayed transit, or remaining monotonic lifetime`);
+    report.requests.push({engine, clockOffsetMs: offset, clockGETs: calls});
+    await context.close();
+  }
 }
 
 async function integration(engine, browser, width) {
@@ -224,7 +298,7 @@ async function integration(engine, browser, width) {
 (async () => {
   for (const [name, engine, width] of [["chromium", chromium, 1440], ["webkit", webkit, 390]]) {
     const browser = await engine.launch();
-    try { await pollTests(name, browser); if (!process.env.TELEMETRY_UNIT_ONLY) await integration(name, browser, width); }
+    try { await pollTests(name, browser); await clockTests(name, browser); if (!process.env.TELEMETRY_UNIT_ONLY) await integration(name, browser, width); }
     finally { await browser.close(); }
   }
   assert.deepEqual(report.errors, []);

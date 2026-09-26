@@ -202,7 +202,7 @@ async function scenario(browser, engine, width) {
           download_bps: sampled ? (index + 1) * 1024 * 1024 * 99 : null};
       });
       return route.fulfill({status: 200, contentType: "application/json", body: JSON.stringify({schema_version: 1,
-        sampled_at: new Date().toISOString(), refresh_ms: 2000, stale_after_ms: 8000, nodes})});
+        sampled_at: new Date().toISOString(), sample_age_ms: 0, refresh_ms: 2000, stale_after_ms: 8000, nodes})});
     });
     await page.goto(topologyURL);
     await hook(page, "graph").waitFor();

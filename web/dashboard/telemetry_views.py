@@ -6,6 +6,7 @@ from datetime import datetime
 
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
+from django.utils.timezone import now as server_now
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET
 
@@ -63,7 +64,10 @@ def public_telemetry(value):
         nodes.append({"id": identifier, "state": state, "source": source,
                       "rate_status": rate_status, "last_seen_at": last_seen,
                       "upload_bps": upload, "download_bps": download})
-    return {"schema_version": 1, "sampled_at": sampled_at, "refresh_ms": 2000,
+    # The sampler and web service share the VPS clock. Browsers need not share
+    # it: comparing sampled_at with a phone's Date.now() can expire fresh data.
+    age_ms = max(0, math.ceil((server_now() - observed).total_seconds() * 1000))
+    return {"schema_version": 1, "sampled_at": sampled_at, "sample_age_ms": min(age_ms, 86_400_000), "refresh_ms": 2000,
             "stale_after_ms": 8000, "nodes": nodes}
 
 

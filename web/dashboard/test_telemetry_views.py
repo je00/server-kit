@@ -1,6 +1,7 @@
 """Live rates stay read-only, strictly typed, and credential-free."""
 
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -30,6 +31,10 @@ class TelemetryViewTests(TestCase):
     def setUp(self):
         self.url = reverse("network-telemetry")
         self.client.force_login(self.users[0])
+        self.now = datetime(2026, 9, 25, 18, tzinfo=timezone.utc)
+        clock = patch("dashboard.telemetry_views.server_now", return_value=self.now)
+        self.clock = clock.start()
+        self.addCleanup(clock.stop)
 
     @patch("dashboard.telemetry_views.network_telemetry", return_value=PAYLOAD)
     def test_all_roles_read_one_lightweight_snapshot_without_config_or_writes(self, read):
@@ -39,7 +44,7 @@ class TelemetryViewTests(TestCase):
                 read.reset_mock()
                 response = self.client.get(self.url)
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.json(), PAYLOAD)
+                self.assertEqual(response.json(), {**PAYLOAD, "sample_age_ms": 0})
                 self.assertIn("no-store", response["Cache-Control"])
                 read.assert_called_once_with()
 
@@ -58,7 +63,7 @@ class TelemetryViewTests(TestCase):
         packet["nodes"][0].update(uuid="sensitive-sentinel", public_key="sensitive-sentinel",
                                   token="sensitive-sentinel", command_stderr="sensitive-sentinel")
         read.return_value = packet
-        self.assertEqual(self.client.get(self.url).json(), PAYLOAD)
+        self.assertEqual(self.client.get(self.url).json(), {**PAYLOAD, "sample_age_ms": 0})
         self.assertIn("private_key", packet)
 
     @patch("dashboard.telemetry_views.network_telemetry")
@@ -101,3 +106,22 @@ class TelemetryViewTests(TestCase):
         packet["nodes"][0].update(rate_status="ok", upload_bps=0, download_bps=0)
         read.return_value = packet
         self.assertEqual(self.client.get(self.url).json()["nodes"][0]["upload_bps"], 0)
+
+    @patch("dashboard.telemetry_views.network_telemetry", return_value=PAYLOAD)
+    def test_age_is_computed_on_vps_and_advances_for_a_cached_sample(self, read):
+        for milliseconds in (0, 1950, 8000, 30000, 90_000_000):
+            self.clock.return_value = self.now + timedelta(milliseconds=milliseconds)
+            response = self.client.get(self.url)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["sample_age_ms"], min(milliseconds, 86_400_000))
+            self.assertEqual(response.json()["sampled_at"], PAYLOAD["sampled_at"])
+
+    @patch("dashboard.telemetry_views.network_telemetry")
+    def test_age_is_server_owned_and_timezone_independent(self, read):
+        packet = deepcopy(PAYLOAD)
+        packet.update(sampled_at="2026-09-26T02:00:00+08:00", sample_age_ms=999999)
+        read.return_value = packet
+        self.assertEqual(self.client.get(self.url).json()["sample_age_ms"], 0)
+        # Tiny server clock adjustments cannot generate invalid negative ages.
+        self.clock.return_value = self.now - timedelta(milliseconds=1)
+        self.assertEqual(self.client.get(self.url).json()["sample_age_ms"], 0)
